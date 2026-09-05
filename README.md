@@ -83,3 +83,12 @@ Quando si preme `Carica altri 10 prodotti`:
 3. dopo il rerun Streamlit la pagina scorre automaticamente;
 4. lo scroll termina esattamente prima della prima scheda della pagina corrente;
 5. il comportamento è one-shot e non si ripete nei rerun successivi.
+
+
+## V11 - pulsanti paginazione su una sola riga
+
+- I pulsanti P.1, P.2, P.3... restano affiancati orizzontalmente.
+- Il layout non viene impilato verticalmente su smartphone.
+- Con il limite di 50 prodotti ci sono al massimo 5 pulsanti.
+- Se lo spazio fosse insufficiente, il contenitore può scorrere orizzontalmente.
+- Cliccando una pagina, lo scroll porta al primo prodotto della pagina scelta.

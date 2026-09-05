@@ -274,6 +274,63 @@ div[data-testid="stCheckbox"] {
     scroll-margin-top: 12px;
 }
 
+/* PAGINAZIONE: tutti i pulsanti sempre sulla stessa riga */
+div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    align-items: stretch !important;
+    gap: 5px !important;
+    width: 100% !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    padding: 2px 0 5px 0 !important;
+    scrollbar-width: thin;
+}
+
+div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) > div,
+div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="column"],
+div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="stColumn"] {
+    flex: 1 1 0 !important;
+    width: auto !important;
+    min-width: 54px !important;
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
+    width: 100% !important;
+    min-width: 54px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+    padding: 4px 7px !important;
+    border-radius: 8px !important;
+    white-space: nowrap !important;
+    font-size: .74rem !important;
+    font-weight: 900 !important;
+}
+
+@media (max-width: 580px) {
+    div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) {
+        gap: 4px !important;
+        flex-wrap: nowrap !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) > div,
+    div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="column"],
+    div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="stColumn"] {
+        min-width: 48px !important;
+        flex: 1 1 0 !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
+        min-width: 48px !important;
+        font-size: .70rem !important;
+        padding: 3px 5px !important;
+    }
+}
+
 .product-card-modern {
     background:
         linear-gradient(
@@ -1176,7 +1233,9 @@ elif active_tab == "cerca":
         st.session_state["current_page"] = current_page
 
         if pages > 1:
-            page_cols = st.columns(pages)
+            # Una sola riga orizzontale: P.1 P.2 P.3 ...
+            # Il CSS impedisce a Streamlit di impilare le colonne su mobile.
+            page_cols = st.columns([1] * pages, gap="small")
 
             for page_number, col in enumerate(page_cols, start=1):
                 with col:
@@ -1191,6 +1250,7 @@ elif active_tab == "cerca":
                         use_container_width=True,
                     ):
                         st.session_state["current_page"] = page_number
+                        st.session_state["scroll_to_current_results_page"] = True
                         st.rerun()
 
         start = (current_page - 1) * 10
