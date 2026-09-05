@@ -38,6 +38,9 @@ st.session_state.setdefault("contact_sent_session", False)
 st.session_state.setdefault("offerte_vetrina", [])
 st.session_state.setdefault("vetrina_refresh_token", str(time.time_ns()))
 st.session_state.setdefault("vetrina_loaded_token", None)
+st.session_state.setdefault("search_sort", "Prezzo minimo")
+st.session_state.setdefault("search_keyword_input", "")
+st.session_state.setdefault("search_prime_only", False)
 
 # La scheda Contatti resta nel codice ma non è visibile/raggiungibile
 # dalla navigazione pubblica.
@@ -546,6 +549,78 @@ def open_vetrina() -> None:
 
 
 
+def _sort_loaded_products(
+    products: list[dict],
+    sort_type: str,
+) -> list[dict]:
+    """Riordina localmente TUTTI i prodotti già caricati.
+
+    Non effettua nuove chiamate Amazon. Il campo `_amazon_position`
+    conserva l'ordine originale del fallback HTML anche dopo un precedente
+    ordinamento per prezzo.
+    """
+    ordered = list(products or [])
+
+    # Ordine di sicurezza per elementi che non hanno metadati di ranking.
+    for index, product in enumerate(ordered):
+        product.setdefault("_loaded_position", index)
+
+    if sort_type == "Prezzo minimo":
+        ordered.sort(
+            key=lambda product: (
+                product.get("prezzo_finale") is None,
+                float(product.get("prezzo_finale") or float("inf")),
+                int(product.get("_loaded_position") or 0),
+            )
+        )
+        return ordered
+
+    if sort_type == "Quantità vendite":
+        def sales_key(product: dict) -> tuple:
+            sales_rank = product.get("sales_rank")
+            amazon_position = product.get("_amazon_position")
+            loaded_position = int(product.get("_loaded_position") or 0)
+
+            try:
+                if sales_rank is not None:
+                    return (0, int(sales_rank), loaded_position)
+            except (TypeError, ValueError):
+                pass
+
+            try:
+                if amazon_position is not None:
+                    return (1, int(amazon_position), loaded_position)
+            except (TypeError, ValueError):
+                pass
+
+            return (2, loaded_position, loaded_position)
+
+        ordered.sort(key=sales_key)
+        return ordered
+
+    return ordered
+
+
+def _on_search_sort_change() -> None:
+    """Callback immediato quando l'utente cambia l'ordinamento."""
+    selected_sort = str(
+        st.session_state.get("search_sort") or "Prezzo minimo"
+    )
+
+    last_search = dict(st.session_state.get("last_search", {}))
+    last_search["sort"] = selected_sort
+    st.session_state["last_search"] = last_search
+
+    loaded_products = list(st.session_state.get("offerte", []))
+    if loaded_products:
+        st.session_state["offerte"] = _sort_loaded_products(
+            loaded_products,
+            selected_sort,
+        )
+        # Dopo un cambio ordinamento mostriamo subito i migliori risultati.
+        st.session_state["current_page"] = 1
+
+
 def _perform_search(target_count: int) -> None:
     cfg = st.session_state["last_search"]
     target_count = max(10, min(int(target_count), MAX_RESULTS))
@@ -558,7 +633,15 @@ def _perform_search(target_count: int) -> None:
             item_count=target_count,
         )
 
-    st.session_state["offerte"] = list(results or [])
+    normalized_results = list(results or [])
+
+    for index, product in enumerate(normalized_results):
+        product.setdefault("_loaded_position", index)
+
+    st.session_state["offerte"] = _sort_loaded_products(
+        normalized_results,
+        str(cfg.get("sort") or "Prezzo minimo"),
+    )
     st.session_state["item_count"] = target_count
     st.session_state["has_searched"] = True
 
@@ -958,51 +1041,70 @@ elif active_tab == "cerca":
 
     previous = st.session_state.get("last_search", {})
     sort_keys = list(SORT_MAPPINGS.keys())
+
     previous_sort = str(previous.get("sort") or "Prezzo minimo")
     if previous_sort not in sort_keys:
         previous_sort = "Prezzo minimo"
 
-    with st.form("search_form", border=False):
-        search_col, button_col = st.columns([5, 1])
+    if st.session_state.get("search_sort") not in sort_keys:
+        st.session_state["search_sort"] = previous_sort
 
-        with search_col:
-            keyword = st.text_input(
-                "Prodotto",
-                value=str(previous.get("keyword") or ""),
-                placeholder="Cosa cerchi su Amazon? Es. iPhone, scarpe, cuffie...",
-                label_visibility="collapsed",
-            )
+    # Inizializza i controlli dalla ricerca precedente solo quando vuoti.
+    if (
+        not st.session_state.get("search_keyword_input")
+        and previous.get("keyword")
+    ):
+        st.session_state["search_keyword_input"] = str(previous.get("keyword") or "")
 
-        with button_col:
-            submitted = st.form_submit_button(
-                "🔍 Cerca",
-                type="primary",
-                use_container_width=True,
-            )
+    search_col, button_col = st.columns([5, 1])
 
-        sort_choice = st.radio(
-            "Ordinamento:",
-            sort_keys,
-            index=sort_keys.index(previous_sort),
-            horizontal=True,
+    with search_col:
+        st.text_input(
+            "Prodotto",
+            placeholder="Cosa cerchi su Amazon? Es. iPhone, scarpe, cuffie...",
+            label_visibility="collapsed",
+            key="search_keyword_input",
         )
 
-        if sort_choice == "Quantità vendite":
-            st.caption(
-                "Quantità vendite: viene privilegiato il ranking Amazon disponibile; "
-                "non è mostrato un conteggio inventato di unità vendute."
-            )
-
-        prime_only = st.checkbox(
-            "🚚 Solo risultati compatibili con il filtro Prime di Amazon",
-            value=bool(previous.get("prime_only", False)),
+    with button_col:
+        submitted = st.button(
+            "🔍 Cerca",
+            key="search_submit_button",
+            type="primary",
+            use_container_width=True,
         )
+
+    st.radio(
+        "Ordinamento:",
+        sort_keys,
+        horizontal=True,
+        key="search_sort",
+        on_change=_on_search_sort_change,
+    )
+
+    if st.session_state.get("search_sort") == "Quantità vendite":
+        st.caption(
+            "Il cambio è immediato su tutte le schede già caricate. "
+            "Viene usato il ranking Amazon disponibile; non viene inventato "
+            "un numero di unità vendute."
+        )
+
+    st.checkbox(
+        "🚚 Solo risultati compatibili con il filtro Prime di Amazon",
+        key="search_prime_only",
+    )
 
     if submitted:
         st.session_state["last_search"] = {
-            "keyword": keyword.strip(),
-            "sort": sort_choice,
-            "prime_only": bool(prime_only),
+            "keyword": str(
+                st.session_state.get("search_keyword_input") or ""
+            ).strip(),
+            "sort": str(
+                st.session_state.get("search_sort") or "Prezzo minimo"
+            ),
+            "prime_only": bool(
+                st.session_state.get("search_prime_only", False)
+            ),
         }
         st.session_state["current_page"] = 1
         st.session_state["item_count"] = 10

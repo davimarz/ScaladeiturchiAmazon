@@ -964,6 +964,7 @@ def _search_html_fallback(
                 continue
 
             seen.add(asin)
+            product.setdefault("_amazon_position", len(collected))
             collected.append(product)
 
         if len(collected) >= target:
@@ -1205,6 +1206,7 @@ def ottieni_offerte_avanzate(
                 continue
 
             seen_asins.add(asin)
+            product.setdefault("_amazon_position", len(products))
             products.append(product)
 
             if sort_type != "Quantità vendite" and len(products) >= target:
@@ -1269,6 +1271,7 @@ def ottieni_offerte_avanzate(
             continue
 
         seen_asins.add(asin)
+        product.setdefault("_amazon_position", len(products))
         products.append(product)
 
         if len(products) >= target:

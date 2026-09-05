@@ -51,3 +51,15 @@ Ora:
 - se il primo URL HTML produce zero schede, viene provato anche l'URL alternativo;
 - è stato eliminato il doppio messaggio "Nessun prodotto trovato";
 - il fallback "Quantità vendite" non usa più le recensioni come vendite.
+
+
+## V8 - ordinamento in tempo reale
+
+- `Prezzo minimo` e `Quantità vendite` sono ora widget fuori dal form.
+- Il click sul radio riordina immediatamente tutte le schede già caricate.
+- Non viene eseguita una nuova richiesta Amazon quando si cambia ordinamento.
+- Se sono stati caricati 20, 30, 40 o 50 prodotti, viene riordinato l'intero set.
+- Dopo il cambio ordinamento si torna automaticamente alla pagina 1.
+- Per i prodotti API si usa `WebsiteSalesRank` quando disponibile.
+- Per il fallback HTML si conserva l'ordine originale Amazon in
+  `_amazon_position`, così è possibile ripristinarlo dopo un ordinamento prezzo.
