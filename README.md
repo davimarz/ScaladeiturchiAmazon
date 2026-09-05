@@ -73,3 +73,13 @@ Ora:
   2. WebsiteSalesRank crescente;
   3. ordine Amazon.
 - Il cambio ordinamento resta immediato.
+
+
+## V10 - scroll automatico dopo Carica altri 10
+
+Quando si preme `Carica altri 10 prodotti`:
+1. vengono recuperati i nuovi prodotti;
+2. `current_page` passa alla pagina appena aggiunta;
+3. dopo il rerun Streamlit la pagina scorre automaticamente;
+4. lo scroll termina esattamente prima della prima scheda della pagina corrente;
+5. il comportamento è one-shot e non si ripete nei rerun successivi.

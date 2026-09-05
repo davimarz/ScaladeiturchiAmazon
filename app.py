@@ -9,6 +9,7 @@ import urllib.parse
 from email.message import EmailMessage
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import amazon_api
 
@@ -41,6 +42,7 @@ st.session_state.setdefault("vetrina_loaded_token", None)
 st.session_state.setdefault("search_sort", "Prezzo minimo")
 st.session_state.setdefault("search_keyword_input", "")
 st.session_state.setdefault("search_prime_only", False)
+st.session_state.setdefault("scroll_to_current_results_page", False)
 
 # La scheda Contatti resta nel codice ma non è visibile/raggiungibile
 # dalla navigazione pubblica.
@@ -268,6 +270,10 @@ div[data-testid="stCheckbox"] {
 }
 
 /* SCHEDA PRODOTTO: palette più ricca come il vecchio sito */
+#search-current-page-top {
+    scroll-margin-top: 12px;
+}
+
 .product-card-modern {
     background:
         linear-gradient(
@@ -692,7 +698,11 @@ def _load_more() -> None:
 
     if new_count > previous_count:
         st.session_state["current_page"] = max(1, (new_count + 9) // 10)
+        # Al rerun successivo scorriamo direttamente al primo prodotto
+        # della nuova pagina appena caricata.
+        st.session_state["scroll_to_current_results_page"] = True
     else:
+        st.session_state["scroll_to_current_results_page"] = False
         st.session_state["search_notice"] = (
             "Non risultano altri prodotti disponibili per questa ricerca."
         )
@@ -1192,6 +1202,13 @@ elif active_tab == "cerca":
             unsafe_allow_html=True,
         )
 
+        # Punto esatto verso cui scorrere dopo "Carica altri 10".
+        # È collocato subito prima della prima scheda della pagina corrente.
+        st.markdown(
+            "<div id='search-current-page-top'></div>",
+            unsafe_allow_html=True,
+        )
+
         for product in results[start:end]:
             render_product_card(product)
 
@@ -1201,6 +1218,48 @@ elif active_tab == "cerca":
             use_container_width=True,
             disabled=int(st.session_state.get("item_count", 10)) >= MAX_RESULTS,
         )
+
+        if st.session_state.get("scroll_to_current_results_page", False):
+            # Flag one-shot: evita che ogni rerun successivo faccia di nuovo scroll.
+            st.session_state["scroll_to_current_results_page"] = False
+
+            components.html(
+                """
+                <script>
+                (function () {
+                    let attempts = 0;
+                    const maxAttempts = 30;
+
+                    const timer = setInterval(function () {
+                        attempts += 1;
+
+                        try {
+                            const doc = window.parent.document;
+                            const target = doc.getElementById(
+                                "search-current-page-top"
+                            );
+
+                            if (target) {
+                                target.scrollIntoView({
+                                    behavior: "smooth",
+                                    block: "start"
+                                });
+                                clearInterval(timer);
+                                return;
+                            }
+                        } catch (error) {
+                            // Nessun errore viene mostrato all'utente.
+                        }
+
+                        if (attempts >= maxAttempts) {
+                            clearInterval(timer);
+                        }
+                    }, 100);
+                })();
+                </script>
+                """,
+                height=0,
+            )
 
     elif (
         st.session_state.get("has_searched")
