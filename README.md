@@ -36,3 +36,18 @@ Non vengono inventati recensioni, vendite, prezzi o spedizioni.
 Il fallback HTML è meno stabile dell'API ufficiale e può smettere di funzionare
 se Amazon cambia markup o blocca le richieste dal server Streamlit. Creators API
 rimane sempre la fonte prioritaria.
+
+
+## V7 - correzione ricerca
+
+Problema corretto: il fallback HTML della ricerca con "Prezzo minimo" aggiungeva
+il parametro Amazon `s=price-asc-rank`, mentre la Vetrina usava una pagina
+standard. Su Streamlit la variante ordinata poteva restituire markup diverso o
+non parsabile.
+
+Ora:
+- Vetrina e Cerca usano lo stesso recupero HTML standard;
+- "Prezzo minimo" viene ordinato localmente dopo l'estrazione;
+- se il primo URL HTML produce zero schede, viene provato anche l'URL alternativo;
+- è stato eliminato il doppio messaggio "Nessun prodotto trovato";
+- il fallback "Quantità vendite" non usa più le recensioni come vendite.

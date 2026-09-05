@@ -909,16 +909,29 @@ def _search_html_fallback(
             "page": page,
         }
 
-        # Per il prezzo minimo chiediamo anche il sort ad Amazon;
-        # ordiniamo comunque localmente alla fine.
-        if sort_type == "Prezzo minimo":
-            query["s"] = "price-asc-rank"
-
+        # IMPORTANTE:
+        # usiamo sempre la ricerca HTML standard, identica a quella della
+        # Vetrina. L'ordinamento viene applicato localmente dopo il parsing.
+        # Alcune varianti Amazon con parametro `s` possono restituire markup
+        # diverso o pagine non utilizzabili dai server Streamlit.
         url = f"https://www.amazon.it/s?{urlencode(query)}"
         html_text = _get_amazon_html_cached(url)
 
-        if not html_text:
-            # URL alternativo simile al vecchio codice, utile in alcuni layout.
+        page_products: list[dict[str, Any]] = []
+
+        if html_text:
+            page_products = _extract_products_from_html(
+                html_text,
+                partner_tag=partner_tag,
+                min_price=min_price,
+                max_price=max_price,
+                require_prime=require_prime,
+            )
+
+        # Se la pagina esiste ma il markup non ha prodotto schede,
+        # proviamo il secondo URL. Prima lo facevamo solo quando il download
+        # falliva completamente.
+        if not page_products:
             alt_query = urlencode(
                 {
                     "url": "search-alias=aps",
@@ -926,19 +939,23 @@ def _search_html_fallback(
                     "page": page,
                 }
             )
-            html_text = _get_amazon_html_cached(
-                f"https://www.amazon.it/s/ref=nb_sb_noss?{alt_query}"
-            )
+            alt_url = f"https://www.amazon.it/s/ref=nb_sb_noss?{alt_query}"
+            alt_html = _get_amazon_html_cached(alt_url)
 
-        if not html_text:
-            continue
+            if alt_html:
+                page_products = _extract_products_from_html(
+                    alt_html,
+                    partner_tag=partner_tag,
+                    min_price=min_price,
+                    max_price=max_price,
+                    require_prime=require_prime,
+                )
 
-        page_products = _extract_products_from_html(
-            html_text,
-            partner_tag=partner_tag,
-            min_price=min_price,
-            max_price=max_price,
-            require_prime=require_prime,
+        LOGGER.info(
+            "HTML fallback query=%r page=%s prodotti=%s",
+            clean_keyword,
+            page,
+            len(page_products),
         )
 
         for product in page_products:
@@ -960,14 +977,9 @@ def _search_html_fallback(
             )
         )
     elif sort_type == "Quantità vendite":
-        # Amazon non espone le unità vendute nell'HTML.
-        # Manteniamo l'ordine Amazon e usiamo le recensioni solo come tie-break.
-        collected.sort(
-            key=lambda product: (
-                -(int(product.get("_html_reviews") or 0)),
-                float(product.get("prezzo_finale") or float("inf")),
-            )
-        )
+        # Amazon non espone il numero esatto di unità vendute nell'HTML.
+        # Manteniamo quindi l'ordine con cui Amazon presenta i risultati.
+        pass
 
     return tuple(collected[:target])
 
@@ -1271,16 +1283,22 @@ def ottieni_offerte_avanzate(
             )
         )
     elif sort_type == "Quantità vendite":
-        # I prodotti API con WebsiteSalesRank restano prioritari.
-        # Per quelli HTML non inventiamo un rank; usiamo il conteggio recensioni
-        # solo come ordinamento interno del fallback.
-        products.sort(
-            key=lambda product: (
-                0 if product.get("sales_rank") is not None else 1,
-                int(product.get("sales_rank") or 10**12),
-                -(int(product.get("_html_reviews") or 0)),
-            )
+        # Se Creators API fornisce un WebsiteSalesRank reale, i prodotti API
+        # vengono ordinati per quel rank. I risultati solo HTML mantengono
+        # invece l'ordine Amazon senza trasformare recensioni in "vendite".
+        api_products = [
+            product for product in products
+            if product.get("sales_rank") is not None
+        ]
+        html_products_only = [
+            product for product in products
+            if product.get("sales_rank") is None
+        ]
+
+        api_products.sort(
+            key=lambda product: int(product.get("sales_rank") or 10**12)
         )
+        products = api_products + html_products_only
 
     return products[:target]
 

@@ -989,8 +989,8 @@ elif active_tab == "cerca":
 
         if sort_choice == "Quantità vendite":
             st.caption(
-                "Quantità vendite = ordinamento tramite Best Sellers Rank Amazon. "
-                "Amazon non espone il numero esatto di unità vendute."
+                "Quantità vendite: viene privilegiato il ranking Amazon disponibile; "
+                "non è mostrato un conteggio inventato di unità vendute."
             )
 
         prime_only = st.checkbox(
@@ -1059,7 +1059,10 @@ elif active_tab == "cerca":
             disabled=int(st.session_state.get("item_count", 10)) >= MAX_RESULTS,
         )
 
-    elif st.session_state.get("has_searched"):
+    elif (
+        st.session_state.get("has_searched")
+        and not st.session_state.get("search_notice")
+    ):
         st.warning(
             "Nessun prodotto trovato. Prova con una parola chiave diversa."
         )
