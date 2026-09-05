@@ -38,8 +38,6 @@ st.session_state.setdefault("contact_sent_session", False)
 st.session_state.setdefault("offerte_vetrina", [])
 st.session_state.setdefault("vetrina_refresh_token", str(time.time_ns()))
 st.session_state.setdefault("vetrina_loaded_token", None)
-st.session_state.setdefault("creators_api_unavailable", False)
-st.session_state.setdefault("creators_api_reason", "")
 
 # La scheda Contatti resta nel codice ma non è visibile/raggiungibile
 # dalla navigazione pubblica.
@@ -548,75 +546,9 @@ def open_vetrina() -> None:
 
 
 
-def _remember_api_availability() -> dict:
-    status = amazon_api.get_last_api_status()
-    if amazon_api.is_associate_not_eligible(status):
-        st.session_state["creators_api_unavailable"] = True
-        st.session_state["creators_api_reason"] = "account_not_eligible"
-    return status
-
-
-def _affiliate_search_url(keyword: str) -> str:
-    return amazon_api.build_amazon_search_link(keyword, partner_tag=amazon_api.get_partner_tag())
-
-
-def render_api_fallback_search(keyword: str) -> None:
-    clean_keyword = " ".join(str(keyword or "").strip().split()) or "offerte Amazon"
-    url = _affiliate_search_url(clean_keyword)
-    st.markdown(
-        (
-            "<div class='api-fallback-box'>"
-            "<div class='api-fallback-title'>Ricerca automatica temporaneamente non disponibile</div>"
-            "<div class='api-fallback-text'>Puoi continuare la ricerca direttamente su Amazon. "
-            "Puoi continuare la ricerca direttamente su Amazon.</div>"
-            f"<a class='amazon-search-direct' href='{html.escape(url, quote=True)}' "
-            "target='_blank' rel='noopener noreferrer sponsored'>"
-            f"🔍 Cerca “{html.escape(clean_keyword)}” su Amazon</a>"
-            "</div>"
-        ),
-        unsafe_allow_html=True,
-    )
-
-
-def render_vetrina_fallback() -> None:
-    categories = (
-        ("💻 Tecnologia", "offerte tecnologia"),
-        ("🏠 Casa e cucina", "offerte casa cucina"),
-        ("🎧 Audio", "offerte cuffie bluetooth"),
-        ("⌚ Smartwatch", "offerte smartwatch"),
-        ("🏃 Sport", "offerte sport fitness"),
-        ("🧴 Cura persona", "offerte cura persona"),
-    )
-    links = []
-    for label, keyword in categories:
-        url = _affiliate_search_url(keyword)
-        links.append(
-            f"<a class='fallback-category-link' href='{html.escape(url, quote=True)}' "
-            "target='_blank' rel='noopener noreferrer sponsored'>"
-            f"{html.escape(label)}</a>"
-        )
-    st.markdown(
-        (
-            "<div class='api-fallback-box'>"
-            "<div class='api-fallback-title'>Scopri offerte su Amazon</div>"
-            "<div class='api-fallback-text'>Le schede automatiche non sono disponibili in questo momento. "
-            "Puoi comunque aprire le categorie direttamente su Amazon.</div>"
-            "<div class='fallback-category-grid'>" + "".join(links) + "</div></div>"
-        ),
-        unsafe_allow_html=True,
-    )
-
-
 def _perform_search(target_count: int) -> None:
     cfg = st.session_state["last_search"]
     target_count = max(10, min(int(target_count), MAX_RESULTS))
-
-    if st.session_state.get("creators_api_unavailable") is True:
-        st.session_state["offerte"] = []
-        st.session_state["item_count"] = target_count
-        st.session_state["has_searched"] = True
-        st.session_state["search_notice"] = ""
-        return
 
     with st.spinner("Ricerca prodotti su Amazon..."):
         results = amazon_api.ottieni_offerte_avanzate(
@@ -631,22 +563,16 @@ def _perform_search(target_count: int) -> None:
     st.session_state["has_searched"] = True
 
     if not results:
-        api_status = _remember_api_availability()
-        if amazon_api.is_associate_not_eligible(api_status):
-            st.session_state["search_notice"] = ""
-            return
-        if api_status.get("status_code") and api_status.get("status_code") != 200:
-            st.session_state["search_notice"] = (
-                "La ricerca automatica Amazon non è disponibile al momento. "
-                "Puoi usare il collegamento diretto qui sotto."
-            )
-        else:
-            st.session_state["search_notice"] = "Nessun prodotto trovato. Prova una ricerca più generica."
+        # Non mostriamo all'utente differenze tra API e fallback HTML.
+        st.session_state["search_notice"] = (
+            "Nessun prodotto trovato. Prova con una parola chiave diversa."
+        )
     elif len(results) < target_count:
-        st.session_state["search_notice"] = f"Amazon ha restituito {len(results)} prodotti disponibili per questi criteri."
+        st.session_state["search_notice"] = (
+            f"Sono disponibili {len(results)} prodotti per questa ricerca."
+        )
     else:
         st.session_state["search_notice"] = ""
-
 
 def _load_more() -> None:
     current_target = int(st.session_state.get("item_count", 10) or 10)
@@ -797,7 +723,12 @@ def render_product_card(product: dict) -> None:
 
     badges_html = "".join(badge_parts)
 
-    note = "Prezzo Buy Box verificato tramite Amazon Creators API."
+    source = str(product.get("source") or "")
+    if source == "amazon_html":
+        note = "Prezzo rilevato dalla pagina Amazon; può variare."
+    else:
+        note = "Prezzo verificato tramite i dati Amazon disponibili."
+
     saving_basis_label = str(product.get("saving_basis_label") or "").strip()
 
     if (
@@ -995,7 +926,6 @@ if active_tab == "vetrina":
     if (
         st.session_state.get("vetrina_loaded_token") != current_token
         and partner_tag
-        and st.session_state.get("creators_api_unavailable") is not True
     ):
         with st.spinner("Aggiornamento offerte Amazon..."):
             showcase = amazon_api.ottieni_vetrina_casuale(
@@ -1005,7 +935,6 @@ if active_tab == "vetrina":
 
         st.session_state["offerte_vetrina"] = list(showcase or [])
         st.session_state["vetrina_loaded_token"] = current_token
-        _remember_api_availability()
 
     showcase = st.session_state.get("offerte_vetrina", [])
 
@@ -1013,21 +942,10 @@ if active_tab == "vetrina":
         for product in showcase:
             render_product_card(product)
     else:
-        api_status = _remember_api_availability()
-
-        if (
-            st.session_state.get("creators_api_unavailable") is True
-            or amazon_api.is_associate_not_eligible(api_status)
-        ):
-            render_vetrina_fallback()
-        elif api_status.get("status_code") and api_status.get("status_code") != 200:
-            st.info(
-                "Le offerte automatiche non sono disponibili al momento. "
-                "Puoi comunque usare i collegamenti Amazon qui sotto."
-            )
-            render_vetrina_fallback()
-        else:
-            st.info("Nessun prodotto disponibile in vetrina al momento.")
+        st.info(
+            "Nessun prodotto disponibile in vetrina al momento. "
+            "Ricarica la pagina tra poco."
+        )
 
 elif active_tab == "cerca":
     st.markdown(
@@ -1142,16 +1060,9 @@ elif active_tab == "cerca":
         )
 
     elif st.session_state.get("has_searched"):
-        last_keyword = str(st.session_state.get("last_search", {}).get("keyword") or "").strip()
-
-        if st.session_state.get("creators_api_unavailable") is True:
-            render_api_fallback_search(last_keyword)
-        else:
-            api_status = amazon_api.get_last_api_status()
-            if api_status.get("status_code") and api_status.get("status_code") != 200:
-                render_api_fallback_search(last_keyword)
-            else:
-                st.warning("Nessun prodotto trovato.")
+        st.warning(
+            "Nessun prodotto trovato. Prova con una parola chiave diversa."
+        )
 
 elif active_tab == "privacy":
     st.markdown(

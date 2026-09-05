@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import random
+import re
 import threading
 import time
 from typing import Any, Optional
@@ -10,6 +12,14 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import requests
 import streamlit as st
+from bs4 import BeautifulSoup
+
+try:
+    from curl_cffi import requests as c_requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    c_requests = None
+    HAS_CURL_CFFI = False
 
 
 MARKETPLACE = "www.amazon.it"
@@ -22,6 +32,26 @@ MAX_SEARCH_PAGES = 10
 SEARCH_CACHE_TTL = 10 * 60
 PRICE_CACHE_TTL = 2 * 60
 HTTP_TIMEOUT = 8
+HTML_TIMEOUT = 10
+HTML_CACHE_TTL = 180
+
+RE_ASIN = re.compile(
+    r"(?:/dp/|/gp/product/|/d/|^)([A-Z0-9]{10})(?:[/?&#]|$)",
+    re.IGNORECASE,
+)
+RE_PRICE = re.compile(r"(\d{1,3}(?:\.\d{3})*|\d+)[,.](\d{2})")
+RE_DIGITS = re.compile(r"[^\d]")
+
+_HTML_CACHE: dict[str, tuple[float, str]] = {}
+
+USER_AGENTS = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+)
 
 # In UI restano solo le due opzioni richieste.
 # "Quantità vendite" usa il WebsiteSalesRank/Best Sellers Rank di Amazon:
@@ -507,6 +537,440 @@ def _search_item_to_product(
         "source": "creators_api_searchitems_fallback",
     }
 
+
+def _parse_html_price(text: Any) -> float:
+    if text is None:
+        return 0.0
+
+    cleaned = (
+        str(text)
+        .replace("\xa0", " ")
+        .replace("&nbsp;", " ")
+        .strip()
+    )
+
+    match = RE_PRICE.search(cleaned)
+    if match:
+        whole = match.group(1).replace(".", "")
+        fraction = match.group(2)
+        try:
+            value = float(f"{whole}.{fraction}")
+            return value if value > 0 else 0.0
+        except ValueError:
+            return 0.0
+
+    integer_match = (
+        re.search(r"(\d{1,3}(?:\.\d{3})*|\d+)\s*€", cleaned)
+        or re.search(r"€\s*(\d{1,3}(?:\.\d{3})*|\d+)", cleaned)
+    )
+    if integer_match:
+        try:
+            value = float(integer_match.group(1).replace(".", ""))
+            return value if value > 0 else 0.0
+        except ValueError:
+            return 0.0
+
+    return 0.0
+
+
+def _html_response_is_usable(status_code: int, text: str) -> bool:
+    if status_code != 200 or not text or len(text) < 1500:
+        return False
+
+    lowered = text.lower()
+    blocked_markers = (
+        "robot check",
+        "enter the characters you see below",
+        "sorry! something went wrong!",
+        "automated access",
+    )
+    return not any(marker in lowered for marker in blocked_markers)
+
+
+def _fetch_amazon_html(url: str) -> Optional[str]:
+    """Scarica HTML Amazon. curl_cffi è il primo tentativo, requests il secondo."""
+    headers = {
+        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.7,en;q=0.6",
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,*/*;q=0.8"
+        ),
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    cookies = {
+        "lc-acbit": "it_IT",
+        "i18n-prefs": "EUR",
+    }
+
+    if HAS_CURL_CFFI and c_requests is not None:
+        # Le versioni supportate dipendono dalla release di curl_cffi.
+        # Ogni tentativo è isolato: un impersonate non supportato non blocca gli altri.
+        for impersonate in ("chrome", "chrome124", "chrome120", "safari17_0"):
+            try:
+                response = c_requests.get(
+                    url,
+                    impersonate=impersonate,
+                    timeout=HTML_TIMEOUT,
+                    headers=headers,
+                    cookies=cookies,
+                    allow_redirects=True,
+                )
+                if _html_response_is_usable(response.status_code, response.text):
+                    return response.text
+            except Exception:
+                continue
+
+    try:
+        session = requests.Session()
+        request_headers = dict(headers)
+        request_headers["User-Agent"] = random.choice(USER_AGENTS)
+
+        response = session.get(
+            url,
+            headers=request_headers,
+            cookies=cookies,
+            timeout=HTML_TIMEOUT,
+            allow_redirects=True,
+        )
+        if _html_response_is_usable(response.status_code, response.text):
+            return response.text
+    except requests.RequestException:
+        pass
+
+    return None
+
+
+def _get_amazon_html_cached(url: str) -> Optional[str]:
+    now = time.time()
+
+    cached = _HTML_CACHE.get(url)
+    if cached:
+        cached_at, html_text = cached
+        if now - cached_at < HTML_CACHE_TTL and html_text:
+            return html_text
+
+    html_text = _fetch_amazon_html(url)
+    if html_text:
+        _HTML_CACHE[url] = (now, html_text)
+
+        # Limite semplice per evitare crescita indefinita su Streamlit.
+        if len(_HTML_CACHE) > 80:
+            oldest = sorted(
+                _HTML_CACHE.items(),
+                key=lambda pair: pair[1][0],
+            )[:20]
+            for key, _ in oldest:
+                _HTML_CACHE.pop(key, None)
+
+    return html_text
+
+
+def _extract_html_review_count(item: Any) -> Optional[int]:
+    review_element = (
+        item.select_one("span.a-size-base.s-underline-text")
+        or item.select_one("a[href*='customerReviews'] span")
+        or item.select_one("a[href*='#customerReviews'] span")
+    )
+    if not review_element:
+        return None
+
+    digits = RE_DIGITS.sub("", review_element.get_text(" ", strip=True))
+    if not digits:
+        return None
+
+    try:
+        value = int(digits)
+        return value if value >= 0 else None
+    except ValueError:
+        return None
+
+
+def _extract_html_prime(item: Any) -> bool:
+    prime_selector = (
+        "i.a-icon-prime, span.a-icon-prime, "
+        "[aria-label='Amazon Prime'], "
+        "img[alt*='Prime'], img[alt*='prime']"
+    )
+    if item.select_one(prime_selector):
+        return True
+
+    return "prime" in item.get_text(" ", strip=True).lower()
+
+
+def _extract_products_from_html(
+    html_text: str,
+    partner_tag: str,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    require_prime: bool = False,
+) -> list[dict[str, Any]]:
+    if not html_text:
+        return []
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    items = soup.select("div[data-component-type='s-search-result']")
+    if not items:
+        items = [
+            node
+            for node in soup.select("div[data-asin]")
+            if len(str(node.get("data-asin") or "").strip()) == 10
+        ]
+    if not items:
+        items = soup.select("div.s-result-item, li.s-result-item")
+
+    products: list[dict[str, Any]] = []
+    seen_asins: set[str] = set()
+
+    for item in items:
+        asin = str(item.get("data-asin") or "").strip().upper()
+
+        if len(asin) != 10:
+            link_with_asin = item.select_one(
+                "a[href*='/dp/'], a[href*='/gp/product/']"
+            )
+            if link_with_asin:
+                match = RE_ASIN.search(
+                    str(link_with_asin.get("href") or "")
+                )
+                if match:
+                    asin = match.group(1).upper()
+
+        if len(asin) != 10 or asin in seen_asins:
+            continue
+
+        title = ""
+        title_element = (
+            item.select_one("h2 a span")
+            or item.select_one("h2 span")
+            or item.select_one("h2")
+            or item.select_one(".a-size-medium.a-color-base.a-text-normal")
+            or item.select_one(".a-size-base-plus.a-color-base.a-text-normal")
+        )
+        if title_element:
+            title = title_element.get_text(" ", strip=True)
+
+        if not title or len(title) < 3:
+            continue
+
+        image_url = ""
+        image = item.select_one("img.s-image, img[data-src], img")
+        if image:
+            image_url = str(
+                image.get("src")
+                or image.get("data-src")
+                or ""
+            ).strip()
+            if "transparent-pixel" in image_url or "pixel" in image_url.lower():
+                image_url = ""
+
+        price = 0.0
+        price_element = (
+            item.select_one(
+                "span.a-price:not([data-a-strike='true']) .a-offscreen"
+            )
+            or item.select_one(
+                ".a-price-range span.a-price:not([data-a-strike='true']) .a-offscreen"
+            )
+            or item.select_one("span.a-price .a-offscreen")
+            or item.select_one(".a-color-price")
+        )
+        if price_element:
+            price = _parse_html_price(
+                price_element.get_text(" ", strip=True)
+            )
+
+        if price <= 0:
+            whole = item.select_one(".a-price-whole")
+            fraction = item.select_one(".a-price-fraction")
+            if whole:
+                whole_text = (
+                    whole.get_text("", strip=True)
+                    .replace(".", "")
+                    .replace(",", "")
+                )
+                fraction_text = (
+                    fraction.get_text("", strip=True)
+                    if fraction
+                    else "00"
+                )
+                try:
+                    price = float(f"{whole_text}.{fraction_text}")
+                except ValueError:
+                    price = 0.0
+
+        old_price = price if price > 0 else None
+        old_price_element = (
+            item.select_one("span.a-price[data-a-strike='true'] .a-offscreen")
+            or item.select_one("span.a-text-price .a-offscreen")
+            or item.select_one("span[data-a-strike='true']")
+        )
+        if old_price_element:
+            candidate = _parse_html_price(
+                old_price_element.get_text(" ", strip=True)
+            )
+            if candidate > price > 0:
+                old_price = candidate
+
+        discount_value = 0
+        if (
+            old_price is not None
+            and old_price > price > 0
+        ):
+            discount_value = int(
+                round(((old_price - price) / old_price) * 100)
+            )
+
+        is_prime = _extract_html_prime(item)
+        if require_prime and not is_prime:
+            continue
+
+        if min_price is not None:
+            if price <= 0 or price < float(min_price):
+                continue
+        if max_price is not None:
+            if price <= 0 or price > float(max_price):
+                continue
+
+        reviews = _extract_html_review_count(item)
+
+        product = {
+            "asin": asin,
+            "titolo": title,
+            "immagine_url": image_url,
+            "prezzo_iniziale": old_price,
+            "prezzo_finale": price if price > 0 else None,
+            "prezzo_verificato": bool(price > 0),
+            "sconto": (
+                f"-{discount_value}%"
+                if discount_value > 0
+                else ""
+            ),
+            "sconto_val": discount_value,
+            "saving_basis_label": "",
+            "is_prime_exclusive": False,
+            "is_prime": is_prime,
+            "prime_filter_match": is_prime,
+            "tipo_offerta": "",
+            # Il conteggio recensioni viene usato soltanto come tie-break
+            # interno quando l'utente sceglie "Quantità vendite".
+            # Non viene mostrato come vendite reali.
+            "_html_reviews": reviews,
+            "sales_rank": None,
+            "sales_rank_category": "",
+            "link_affiliato": _affiliate_detail_url(
+                f"https://www.amazon.it/dp/{asin}",
+                asin,
+                partner_tag,
+            ),
+            "source": "amazon_html",
+        }
+
+        seen_asins.add(asin)
+        products.append(product)
+
+    return products
+
+
+@st.cache_data(ttl=HTML_CACHE_TTL, show_spinner=False, max_entries=128)
+def _search_html_fallback(
+    keyword: str,
+    sort_type: str,
+    partner_tag: str,
+    require_prime: bool,
+    min_price: Optional[float],
+    max_price: Optional[float],
+    item_count: int,
+    cache_buster: str = "",
+) -> tuple[dict[str, Any], ...]:
+    # cache_buster consente alla Vetrina di ottenere un set nuovo quando richiesto.
+    del cache_buster
+
+    clean_keyword = " ".join(str(keyword or "").strip().split())
+    if not clean_keyword:
+        clean_keyword = "offerte del giorno"
+
+    target = max(1, min(int(item_count or 10), MAX_RESULTS))
+
+    collected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # Una pagina Amazon contiene in genere più di 10 risultati.
+    # Si limita il numero di fetch per non sovraccaricare né Amazon né Streamlit.
+    max_pages = min(
+        6,
+        max(2, math.ceil(target / 12) + 2),
+    )
+
+    for page in range(1, max_pages + 1):
+        query = {
+            "k": clean_keyword,
+            "page": page,
+        }
+
+        # Per il prezzo minimo chiediamo anche il sort ad Amazon;
+        # ordiniamo comunque localmente alla fine.
+        if sort_type == "Prezzo minimo":
+            query["s"] = "price-asc-rank"
+
+        url = f"https://www.amazon.it/s?{urlencode(query)}"
+        html_text = _get_amazon_html_cached(url)
+
+        if not html_text:
+            # URL alternativo simile al vecchio codice, utile in alcuni layout.
+            alt_query = urlencode(
+                {
+                    "url": "search-alias=aps",
+                    "field-keywords": clean_keyword,
+                    "page": page,
+                }
+            )
+            html_text = _get_amazon_html_cached(
+                f"https://www.amazon.it/s/ref=nb_sb_noss?{alt_query}"
+            )
+
+        if not html_text:
+            continue
+
+        page_products = _extract_products_from_html(
+            html_text,
+            partner_tag=partner_tag,
+            min_price=min_price,
+            max_price=max_price,
+            require_prime=require_prime,
+        )
+
+        for product in page_products:
+            asin = str(product.get("asin") or "").strip().upper()
+            if len(asin) != 10 or asin in seen:
+                continue
+
+            seen.add(asin)
+            collected.append(product)
+
+        if len(collected) >= target:
+            break
+
+    if sort_type == "Prezzo minimo":
+        collected.sort(
+            key=lambda product: (
+                product.get("prezzo_finale") is None,
+                float(product.get("prezzo_finale") or float("inf")),
+            )
+        )
+    elif sort_type == "Quantità vendite":
+        # Amazon non espone le unità vendute nell'HTML.
+        # Manteniamo l'ordine Amazon e usiamo le recensioni solo come tie-break.
+        collected.sort(
+            key=lambda product: (
+                -(int(product.get("_html_reviews") or 0)),
+                float(product.get("prezzo_finale") or float("inf")),
+            )
+        )
+
+    return tuple(collected[:target])
+
 def _passes_local_filters(
     product: dict[str, Any],
     min_price: Optional[float],
@@ -650,28 +1114,27 @@ def ottieni_offerte_avanzate(
         return []
 
     target = max(1, min(int(item_count or 10), MAX_RESULTS))
-    query = str(keyword or "").strip() or "offerte del giorno"
-
-    # SearchItems non offre un ordinamento per numero di unità vendute.
-    # Per "Quantità vendite" usiamo Featured come set di candidati e poi
-    # ordiniamo localmente sul WebsiteSalesRank ottenuto da GetItems.
+    query = " ".join(str(keyword or "").strip().split()) or "offerte del giorno"
     sort_value = SORT_MAPPINGS.get(sort_type, "Price:LowToHigh")
     cache_buster = str(_cache_buster or "normal-search")
 
     products: list[dict[str, Any]] = []
     seen_asins: set[str] = set()
 
+    # -----------------------------------------------------------------
+    # 1) CREATORS API: prima scelta.
+    # -----------------------------------------------------------------
     if sort_type == "Quantità vendite":
-        candidate_target = min(MAX_RESULTS, target + 20)
+        api_candidate_target = min(MAX_RESULTS, target + 20)
     else:
-        candidate_target = target
+        api_candidate_target = target
 
-    required_pages = min(
+    api_pages = min(
         MAX_SEARCH_PAGES,
-        max(1, math.ceil(candidate_target / 10) + 2),
+        max(1, math.ceil(api_candidate_target / 10) + 2),
     )
 
-    for page in range(1, required_pages + 1):
+    for page in range(1, api_pages + 1):
         search_items = _search_page_cached(
             query,
             sort_value,
@@ -682,7 +1145,10 @@ def ottieni_offerte_avanzate(
             max_price,
             cache_buster,
         )
+
         if not search_items:
+            # Se SearchItems è bloccato (es. AssociateNotEligible)
+            # usciamo subito e passiamo al fallback HTML.
             break
 
         asins = tuple(
@@ -699,12 +1165,11 @@ def ottieni_offerte_avanzate(
 
         for search_item in search_items:
             asin = str(search_item.get("asin") or "").strip().upper()
-            if not asin or asin in seen_asins:
+            if len(asin) != 10 or asin in seen_asins:
                 continue
 
-            seen_asins.add(asin)
-
             exact_item = by_asin.get(asin)
+
             if exact_item:
                 product = _item_to_product(
                     exact_item,
@@ -712,31 +1177,92 @@ def ottieni_offerte_avanzate(
                     prime_filter_applied=bool(solo_spedizione_gratuita),
                 )
             else:
-                # Non perdiamo l'intero risultato se GetItems ha un errore
-                # parziale: mostriamo titolo/immagine/link e chiediamo di
-                # verificare il prezzo su Amazon.
-                product = _search_item_to_product(search_item, partner_tag)
+                product = _search_item_to_product(
+                    search_item,
+                    partner_tag,
+                )
 
             if not product:
                 continue
 
-            if not _passes_local_filters(product, min_price, max_price):
+            if not _passes_local_filters(
+                product,
+                min_price,
+                max_price,
+            ):
                 continue
 
+            seen_asins.add(asin)
             products.append(product)
 
             if sort_type != "Quantità vendite" and len(products) >= target:
                 break
 
-            if sort_type == "Quantità vendite" and len(products) >= candidate_target:
+            if (
+                sort_type == "Quantità vendite"
+                and len(products) >= api_candidate_target
+            ):
                 break
 
         if sort_type != "Quantità vendite" and len(products) >= target:
             break
 
-        if sort_type == "Quantità vendite" and len(products) >= candidate_target:
+        if (
+            sort_type == "Quantità vendite"
+            and len(products) >= api_candidate_target
+        ):
             break
 
+    # Se l'API ha già dato abbastanza prodotti, non tocchiamo l'HTML.
+    if len(products) >= target:
+        if sort_type == "Prezzo minimo":
+            products.sort(
+                key=lambda product: (
+                    product.get("prezzo_finale") is None,
+                    float(product.get("prezzo_finale") or float("inf")),
+                )
+            )
+        elif sort_type == "Quantità vendite":
+            products.sort(
+                key=lambda product: (
+                    product.get("sales_rank") is None,
+                    int(product.get("sales_rank") or 10**12),
+                    float(product.get("prezzo_finale") or float("inf")),
+                )
+            )
+
+        return products[:target]
+
+    # -----------------------------------------------------------------
+    # 2) FALLBACK HTML SILENZIOSO.
+    # Se API restituisce zero o pochi risultati, integriamo fino al target.
+    # -----------------------------------------------------------------
+    missing = target - len(products)
+
+    html_products = _search_html_fallback(
+        keyword=query,
+        sort_type=sort_type,
+        partner_tag=partner_tag,
+        require_prime=bool(solo_spedizione_gratuita),
+        min_price=min_price,
+        max_price=max_price,
+        # Chiediamo un po' più del necessario per assorbire duplicati API/HTML.
+        item_count=min(MAX_RESULTS, max(target, missing + 10)),
+        cache_buster=cache_buster,
+    )
+
+    for product in html_products:
+        asin = str(product.get("asin") or "").strip().upper()
+        if len(asin) != 10 or asin in seen_asins:
+            continue
+
+        seen_asins.add(asin)
+        products.append(product)
+
+        if len(products) >= target:
+            break
+
+    # L'ordinamento finale deve essere coerente anche quando le fonti sono miste.
     if sort_type == "Prezzo minimo":
         products.sort(
             key=lambda product: (
@@ -745,11 +1271,14 @@ def ottieni_offerte_avanzate(
             )
         )
     elif sort_type == "Quantità vendite":
+        # I prodotti API con WebsiteSalesRank restano prioritari.
+        # Per quelli HTML non inventiamo un rank; usiamo il conteggio recensioni
+        # solo come ordinamento interno del fallback.
         products.sort(
             key=lambda product: (
-                product.get("sales_rank") is None,
+                0 if product.get("sales_rank") is not None else 1,
                 int(product.get("sales_rank") or 10**12),
-                float(product.get("prezzo_finale") or float("inf")),
+                -(int(product.get("_html_reviews") or 0)),
             )
         )
 

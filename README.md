@@ -1,66 +1,38 @@
-# Scala dei Turchi - Amazon Affiliate Streamlit v2
+# Scala dei Turchi - Streamlit Amazon Hybrid
 
-## Modifiche richieste
-- Scheda Contatti nascosta dalla navigazione pubblica; il codice è mantenuto.
-- Vetrina ricaricata all'avvio di una nuova sessione/browser refresh.
-- Click su Vetrina forza una nuova richiesta SearchItems.
-- Ordinamento predefinito: Prezzo minimo.
-- Rimossi Rilevanza e Popolarità dalla UI.
-- Aggiunto "Quantità vendite".
-- "Quantità vendite" usa `browseNodeInfo.websiteSalesRank` (Best Sellers Rank)
-  perché Amazon non espone il numero esatto di unità vendute.
-- Ripristinata la palette grafica del vecchio sito:
-  azzurro/blu, verde, arancione, sfondo sfumato e badge `AI DEALS`.
-- Restano eliminati scraping HTML, recensioni inventate e spedizioni inventate.
+## Flusso prodotti
 
-## Flusso dati
-SearchItems -> ASIN -> GetItems -> OffersV2 Buy Box
-                              -> WebsiteSalesRank
+1. La web app prova prima Amazon Creators API.
+2. Se Creators API restituisce abbastanza prodotti, usa esclusivamente quelli.
+3. Se Creators API fallisce (incluso HTTP 403 AssociateNotEligible), restituisce
+   zero risultati o restituisce meno prodotti del necessario, il backend passa
+   automaticamente al fallback HTML.
+4. L'utente non vede errori API o pulsanti di fallback: vede soltanto le schede
+   prodotto disponibili nella pagina della web app.
+5. La ricerca iniziale mostra fino a 10 prodotti; `Carica altri 10` aumenta il
+   target fino a 50.
 
-## Deploy
-Carica su GitHub:
-- app.py
-- amazon_api.py
-- requirements.txt
-- .gitignore
+## Dati HTML
 
-Inserisci le credenziali reali solo nei Secrets di Streamlit Cloud.
+Il fallback HTML prova a leggere soltanto dati presenti nella pagina Amazon:
+- ASIN
+- titolo
+- immagine
+- prezzo
+- eventuale prezzo precedente e sconto calcolato
+- presenza Prime
 
-## Nota "Quantità vendite"
-Non è un conteggio di pezzi venduti.
-Il valore ufficiale disponibile è il Best Sellers Rank Amazon:
-un numero più basso indica un posizionamento vendite migliore.
+Non vengono inventati recensioni, vendite, prezzi o spedizioni.
 
+## Dipendenze
 
-## Fix V3 - nessun prodotto in Vetrina/Cerca
+- Streamlit
+- requests
+- BeautifulSoup
+- curl_cffi
 
-Correzioni:
-- `GetItems` legge `itemResults` (nome corrente nella Creators API).
-- compatibilità difensiva anche con `itemsResult`.
-- rimossa la resource non ammessa `offersV2.listings.violatesMAP`.
-- SearchItems conserva titolo, immagine e detailPageURL.
-- se un singolo GetItems fallisce, la scheda resta visibile senza prezzo inventato.
-- aggiunta diagnostica HTTP priva di secrets.
-- pulsante Cerca forzato azzurro; hover verde.
+## Nota tecnica
 
-
-## V4 - fallback per account Creators API temporaneamente non idoneo
-
-- Niente errore HTTP tecnico mostrato all'utente.
-- Vetrina con categorie Amazon affiliate quando le schede automatiche non sono disponibili.
-- Ricerca con pulsante diretto alla keyword su Amazon.it.
-- Link con Partner Tag dai Secrets.
-- Nessun prezzo, prodotto, recensione o vendita inventati.
-- Dopo il primo 403 della sessione l'app evita chiamate ripetute.
-- In una nuova sessione l'app riprova automaticamente Creators API.
-
-
-## V5 - pulizia testi UI
-
-Su richiesta sono stati rimossi dalla UI:
-- la frase sul guadagno dagli acquisti;
-- i riferimenti visibili al Partner Tag;
-- le diciture "link affiliato" / "link affiliati";
-- la frase "Link affiliato a pagamento" nelle schede.
-
-Il Partner Tag resta tecnicamente nel backend per la generazione dei link Amazon.
+Il fallback HTML è meno stabile dell'API ufficiale e può smettere di funzionare
+se Amazon cambia markup o blocca le richieste dal server Streamlit. Creators API
+rimane sempre la fonte prioritaria.
