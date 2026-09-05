@@ -369,6 +369,17 @@ div[data-testid="stCheckbox"] {
     margin-top: 6px;
 }
 
+.sold-qty-pill {
+    background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+    border: 1px solid #fb923c;
+    color: #c2410c;
+    padding: 3px 7px;
+    border-radius: 6px;
+    font-size: 0.67rem;
+    font-weight: 900;
+    box-shadow: 0 1px 3px rgba(234, 88, 12, 0.10);
+}
+
 .sales-rank-pill {
     background: #fff7ed;
     border: 1px solid #fdba74;
@@ -577,23 +588,30 @@ def _sort_loaded_products(
 
     if sort_type == "Quantità vendite":
         def sales_key(product: dict) -> tuple:
+            sold_qty = product.get("sold_qty_month")
             sales_rank = product.get("sales_rank")
             amazon_position = product.get("_amazon_position")
             loaded_position = int(product.get("_loaded_position") or 0)
 
             try:
+                if sold_qty is not None:
+                    return (0, -int(sold_qty), loaded_position)
+            except (TypeError, ValueError):
+                pass
+
+            try:
                 if sales_rank is not None:
-                    return (0, int(sales_rank), loaded_position)
+                    return (1, int(sales_rank), loaded_position)
             except (TypeError, ValueError):
                 pass
 
             try:
                 if amazon_position is not None:
-                    return (1, int(amazon_position), loaded_position)
+                    return (2, int(amazon_position), loaded_position)
             except (TypeError, ValueError):
                 pass
 
-            return (2, loaded_position, loaded_position)
+            return (3, loaded_position, loaded_position)
 
         ordered.sort(key=sales_key)
         return ordered
@@ -784,6 +802,24 @@ def render_product_card(product: dict) -> None:
 
     badge_parts = []
 
+    sold_qty_month = product.get("sold_qty_month")
+    sold_qty_label = str(product.get("sold_qty_label") or "").strip()
+
+    if sold_qty_month:
+        try:
+            sold_qty_int = int(sold_qty_month)
+            if not sold_qty_label:
+                shown = f"{sold_qty_int:,}".replace(",", ".")
+                sold_qty_label = f"{shown}+ acquistati nel mese scorso"
+
+            badge_parts.append(
+                f"<span class='sold-qty-pill'>"
+                f"🔥 {html.escape(sold_qty_label)}"
+                f"</span>"
+            )
+        except (TypeError, ValueError):
+            pass
+
     sales_rank = product.get("sales_rank")
     if sales_rank:
         try:
@@ -822,7 +858,12 @@ def render_product_card(product: dict) -> None:
     ):
         note += f" Rif.: {html.escape(saving_basis_label)}."
 
-    if sales_rank:
+    if sold_qty_month:
+        note += (
+            " La quantità indicata è una soglia minima mostrata da Amazon "
+            "per il mese scorso."
+        )
+    elif sales_rank:
         note += " Il rank vendite non indica il numero esatto di unità vendute."
 
     share = _share_urls(
@@ -1085,8 +1126,8 @@ elif active_tab == "cerca":
     if st.session_state.get("search_sort") == "Quantità vendite":
         st.caption(
             "Il cambio è immediato su tutte le schede già caricate. "
-            "Viene usato il ranking Amazon disponibile; non viene inventato "
-            "un numero di unità vendute."
+            "Priorità a “X+ acquistati nel mese scorso” quando Amazon lo mostra; "
+            "poi Best Sellers Rank e ordine Amazon."
         )
 
     st.checkbox(

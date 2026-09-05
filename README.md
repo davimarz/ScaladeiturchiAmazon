@@ -63,3 +63,13 @@ Ora:
 - Per i prodotti API si usa `WebsiteSalesRank` quando disponibile.
 - Per il fallback HTML si conserva l'ordine originale Amazon in
   `_amazon_position`, così è possibile ripristinarlo dopo un ordinamento prezzo.
+
+
+## V9 - feedback quantità vendite
+- Mostra `X+ acquistati nel mese scorso` quando Amazon espone il dato.
+- La quantità è una soglia minima mensile, non il totale storico.
+- Ordinamento Quantità vendite:
+  1. quantità mensile decrescente;
+  2. WebsiteSalesRank crescente;
+  3. ordine Amazon.
+- Il cambio ordinamento resta immediato.

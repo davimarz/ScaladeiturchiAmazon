@@ -42,6 +42,18 @@ RE_ASIN = re.compile(
 RE_PRICE = re.compile(r"(\d{1,3}(?:\.\d{3})*|\d+)[,.](\d{2})")
 RE_DIGITS = re.compile(r"[^\d]")
 
+# Soglia di acquisti recenti mostrata da Amazon, quando presente:
+# es. "100+ acquistati nel mese scorso".
+RE_MONTHLY_BOUGHT = re.compile(
+    r"(?P<qty>\d{1,3}(?:[.\s]\d{3})*|\d+(?:[.,]\d+)?\s*[kKmM]?)"
+    r"\s*\+\s*"
+    r"(?:acquistat[ioe]|comprat[ioe]|bought)\b"
+    r".{0,60}?"
+    r"(?:mese\s+scorso|ultimo\s+mese|past\s+month)",
+    re.IGNORECASE,
+)
+
+
 _HTML_CACHE: dict[str, tuple[float, str]] = {}
 
 USER_AGENTS = (
@@ -489,6 +501,8 @@ def _item_to_product(
         "is_prime_exclusive": is_prime_exclusive,
         "prime_filter_match": bool(prime_filter_applied),
         "tipo_offerta": offer_type,
+        "sold_qty_month": None,
+        "sold_qty_label": "",
         "sales_rank": sales_rank,
         "sales_rank_category": sales_rank_category,
         "link_affiliato": _affiliate_detail_url(detail_url, asin, partner_tag),
@@ -531,6 +545,8 @@ def _search_item_to_product(
         "is_prime_exclusive": False,
         "prime_filter_match": False,
         "tipo_offerta": "",
+        "sold_qty_month": None,
+        "sold_qty_label": "",
         "sales_rank": None,
         "sales_rank_category": "",
         "link_affiliato": _affiliate_detail_url(detail_url, asin, partner_tag),
@@ -665,6 +681,47 @@ def _get_amazon_html_cached(url: str) -> Optional[str]:
 
     return html_text
 
+
+
+def _parse_compact_quantity(raw: str) -> Optional[int]:
+    text = str(raw or "").strip().lower().replace(" ", "")
+    if not text:
+        return None
+
+    multiplier = 1
+    if text.endswith("k"):
+        multiplier = 1_000
+        text = text[:-1]
+    elif text.endswith("m"):
+        multiplier = 1_000_000
+        text = text[:-1]
+
+    try:
+        if multiplier > 1:
+            result = int(float(text.replace(",", ".")) * multiplier)
+        else:
+            result = int(text.replace(".", "").replace(",", ""))
+    except ValueError:
+        return None
+
+    return result if result > 0 else None
+
+
+def _extract_monthly_bought(item: Any) -> tuple[Optional[int], str]:
+    text = item.get_text(" ", strip=True)
+    if not text:
+        return None, ""
+
+    match = RE_MONTHLY_BOUGHT.search(text)
+    if not match:
+        return None, ""
+
+    qty = _parse_compact_quantity(match.group("qty"))
+    if qty is None:
+        return None, ""
+
+    shown = f"{qty:,}".replace(",", ".")
+    return qty, f"{shown}+ acquistati nel mese scorso"
 
 def _extract_html_review_count(item: Any) -> Optional[int]:
     review_element = (
@@ -834,6 +891,7 @@ def _extract_products_from_html(
                 continue
 
         reviews = _extract_html_review_count(item)
+        sold_qty_month, sold_qty_label = _extract_monthly_bought(item)
 
         product = {
             "asin": asin,
@@ -857,6 +915,8 @@ def _extract_products_from_html(
             # interno quando l'utente sceglie "Quantità vendite".
             # Non viene mostrato come vendite reali.
             "_html_reviews": reviews,
+            "sold_qty_month": sold_qty_month,
+            "sold_qty_label": sold_qty_label,
             "sales_rank": None,
             "sales_rank_category": "",
             "link_affiliato": _affiliate_detail_url(
@@ -978,9 +1038,13 @@ def _search_html_fallback(
             )
         )
     elif sort_type == "Quantità vendite":
-        # Amazon non espone il numero esatto di unità vendute nell'HTML.
-        # Manteniamo quindi l'ordine con cui Amazon presenta i risultati.
-        pass
+        collected.sort(
+            key=lambda product: (
+                product.get("sold_qty_month") is None,
+                -int(product.get("sold_qty_month") or 0),
+                int(product.get("_amazon_position") or 0),
+            )
+        )
 
     return tuple(collected[:target])
 
@@ -1286,22 +1350,26 @@ def ottieni_offerte_avanzate(
             )
         )
     elif sort_type == "Quantità vendite":
-        # Se Creators API fornisce un WebsiteSalesRank reale, i prodotti API
-        # vengono ordinati per quel rank. I risultati solo HTML mantengono
-        # invece l'ordine Amazon senza trasformare recensioni in "vendite".
-        api_products = [
-            product for product in products
-            if product.get("sales_rank") is not None
-        ]
-        html_products_only = [
-            product for product in products
-            if product.get("sales_rank") is None
-        ]
+        def final_sales_key(product: dict) -> tuple:
+            sold_qty = product.get("sold_qty_month")
+            sales_rank = product.get("sales_rank")
+            amazon_position = int(product.get("_amazon_position") or 0)
 
-        api_products.sort(
-            key=lambda product: int(product.get("sales_rank") or 10**12)
-        )
-        products = api_products + html_products_only
+            try:
+                if sold_qty is not None:
+                    return (0, -int(sold_qty), amazon_position)
+            except (TypeError, ValueError):
+                pass
+
+            try:
+                if sales_rank is not None:
+                    return (1, int(sales_rank), amazon_position)
+            except (TypeError, ValueError):
+                pass
+
+            return (2, amazon_position, amazon_position)
+
+        products.sort(key=final_sales_key)
 
     return products[:target]
 
