@@ -297,3 +297,24 @@ Non caricare `streamlit_secrets_new.toml` nel repository GitHub pubblico.
 - Il fallback HTML applica nuovamente i limiti di prezzo dopo la verifica dettaglio. Con filtro Prime attivo esclude i prodotti senza conferma Prime, inclusi quelli scoperti tramite indici esterni. I risultati possono quindi essere meno del numero richiesto.
 - Gli acquisti mensili recuperati dal dettaglio vengono conservati anche quando il prezzo non è disponibile.
 - Verifica: sintassi Python e controlli di regressione con risposte simulate; nessuna chiamata Amazon reale o verifica completa dell'interfaccia.
+
+
+## Gestione consumi - configurazione attuale
+
+Questa sezione sostituisce le indicazioni precedenti su refresh Vetrina e fallback automatico.
+
+- Vetrina condivisa per finestre UTC di 30 minuti, aggiornata alla prima visita della finestra. Riaprire la scheda non forza richieste. Non è un job in background.
+- Ricerche API condivise in cache per 10 minuti, con normalizzazione di spazi e maiuscole. Dettagli GetItems in cache per 10 minuti. Cache condivisa tra sessioni dello stesso processo; le diverse combinazioni di filtri e pagine hanno chiavi separate.
+- Budget locale predefinito: 800 tentativi catalogo al giorno UTC, inclusi retry/errori. NON è la quota Amazon verificata. Configurare daily_request_budget nei Secrets in base alla propria quota, mantenendo un margine. 0 disabilita nuove chiamate; la cache valida resta utilizzabile.
+- Frequenza globale: almeno 1,1 secondi tra prenotazioni di chiamate; dopo 5 secondi di attesa il cliente viene invitato a riprovare. Pausa di 5 secondi tra ricerche nella stessa sessione (non è un sistema anti-abuso per identità/IP).
+- api_budget.py conserva contatori e frequenza in .runtime/api_usage.sqlite3 usando transazioni SQLite. Tutti i processi che condividono questo file condividono il budget. Il contatore include solo questa installazione, non altri siti con le stesse credenziali. Gli endpoint OAuth hanno limiti separati e non sono inclusi nel contatore catalogo.
+- Riavviare il processo conserva il contatore se il disco resta disponibile. Redeploy, disco effimero o repliche con filesystem separati NON garantiscono un budget unico: per questi casi occorre un archivio centrale persistente. Non eliminare .runtime per azzerare i limiti.
+- Se il contatore non è accessibile, nuove chiamate vengono bloccate. Per leggere il contatore amministrativo sul server: `python api_budget.py --limit 800` (usare il valore configurato). I consumi sono anche nei log del server; non vengono mostrati ai clienti.
+- Fallback HTML disabilitato per impostazione predefinita. HAUL apre direttamente Amazon; ricerca e vetrina offrono un link alternativo quando non disponibili. Riattivare enable_html_fallback comporta richieste web aggiuntive non conteggiate come Creators API.
+- Un esaurimento budget/errore temporaneo non viene memorizzato come ricerca vuota. Il caricamento aggiuntivo conserva i risultati precedenti se fallisce. Il budget non viene interrogato prima della cache: i dati validi possono ancora essere serviti senza nuove chiamate.
+
+### Installazione dei file aggiornati
+Sostituire app.py e amazon_api.py, aggiungere api_budget.py e mantenere le proprie credenziali nei Secrets. Il file .streamlit/secrets.example.toml contiene solo un esempio; non sostituisce i Secrets reali. Il processo necessita di scrittura nella sottocartella .runtime. Le dipendenze sono elencate in requirements.txt; curl_cffi è opzionale e non necessario con HTML disabilitato.
+
+### Verifica
+Controlli locali con risposte HTTP e Streamlit simulati; nessuna richiesta reale Amazon. Quota reale e funzionamento sul proprio hosting devono essere verificati prima della diffusione ai clienti.

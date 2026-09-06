@@ -778,18 +778,45 @@ def _on_search_sort_change() -> None:
         st.session_state["current_page"] = 1
 
 
+def _search_allowed() -> bool:
+    now = time.monotonic()
+    if now < st.session_state.get("next_search_at", 0):
+        st.session_state["search_notice"] = "Attendi qualche secondo prima di riprovare."
+        return False
+    st.session_state["next_search_at"] = now + 5
+    return True
+
+
+def _amazon_request(function, **kwargs):
+    st.session_state["amazon_unavailable"] = False
+    try:
+        return function(**kwargs)
+    except amazon_api.api_budget.BudgetUnavailable as exc:
+        LOGGER.info("Ricerca sospesa: %s", exc)
+        st.session_state["amazon_unavailable"] = True
+        st.session_state["search_notice"] = (
+            "La ricerca interna è temporaneamente non disponibile. "
+            "Puoi continuare direttamente su Amazon."
+        )
+        return None
+
+
 def _perform_search(target_count: int) -> None:
     cfg = st.session_state["last_search"]
     target_count = max(10, min(int(target_count), MAX_RESULTS))
 
     with st.spinner(f"Ricerca di {target_count} prodotti..."):
-        results = amazon_api.ottieni_offerte_avanzate(
+        results = _amazon_request(amazon_api.ottieni_offerte_avanzate,
             keyword=cfg["keyword"],
             sort_type=cfg["sort"],
             solo_spedizione_gratuita=cfg["prime_only"],
             item_count=target_count,
         )
 
+    if results is None:
+        st.session_state["offerte"] = []
+        st.session_state["has_searched"] = True
+        return
     normalized_results = list(results or [])
 
     for index, product in enumerate(normalized_results):
@@ -841,6 +868,8 @@ def _perform_search(target_count: int) -> None:
         st.session_state["search_notice"] = ""
 
 def _load_more() -> None:
+    if not _search_allowed():
+        return
     existing = list(st.session_state.get("offerte", []))
     previous_count = len(existing)
 
@@ -863,7 +892,7 @@ def _load_more() -> None:
     )
 
     with st.spinner("Caricamento di altri prodotti..."):
-        new_results = amazon_api.ottieni_offerte_avanzate(
+        new_results = _amazon_request(amazon_api.ottieni_offerte_avanzate,
             keyword=cfg["keyword"],
             sort_type=cfg["sort"],
             solo_spedizione_gratuita=cfg["prime_only"],
@@ -871,6 +900,8 @@ def _load_more() -> None:
             exclude_asins=excluded_asins,
         )
 
+    if new_results is None:
+        return
     existing_asins = set(excluded_asins)
     merged = list(existing)
     for product in list(new_results or []):
@@ -1393,8 +1424,7 @@ if active_tab == "haul":
             render_product_card(product, eager_image=(index == 0))
     else:
         st.info(
-            "Amazon HAUL non ha restituito prodotti leggibili in questo momento. "
-            "Premi di nuovo HAUL o ricarica la pagina."
+            "Apri Amazon HAUL per consultare prodotti, prezzi e disponibilità aggiornati."
         )
 
 elif active_tab == "vetrina":
@@ -1403,29 +1433,27 @@ elif active_tab == "vetrina":
         <h2 style='font-size:.94rem;font-weight:900;color:#0369a1;
         margin:2px 0 2px 2px;'>🔥 Offerte in Vetrina</h2>
         <p style='font-size:.70rem;color:#64748b;margin:0 0 7px 2px;'>
-        La Vetrina viene aggiornata quando ricarichi la pagina o premi Vetrina.
+        La selezione è condivisa e viene aggiornata ogni 30 minuti alla prima visita.
         </p>
         """,
         unsafe_allow_html=True,
     )
 
-    current_token = str(st.session_state["vetrina_refresh_token"])
+    current_token = str(int(time.time() // 1800))
 
     if (
         st.session_state.get("vetrina_loaded_token") != current_token
         and partner_tag
     ):
         with st.spinner("Aggiornamento offerte Amazon..."):
-            showcase = amazon_api.ottieni_vetrina_casuale(
+            showcase = _amazon_request(amazon_api.ottieni_vetrina_casuale,
                 item_count=3,
                 refresh_token=current_token,
             )
 
         new_showcase = list(showcase or [])
-        if new_showcase:
-            st.session_state["offerte_vetrina"] = new_showcase
-        # Se una singola scansione fallisce, non cancelliamo una vetrina
-        # valida già presente nella sessione.
+        st.session_state["offerte_vetrina"] = new_showcase
+        # Nessun prezzo di una vecchia selezione dopo un refresh fallito.
         st.session_state["vetrina_loaded_token"] = current_token
 
     showcase = st.session_state.get("offerte_vetrina", [])
@@ -1434,10 +1462,10 @@ elif active_tab == "vetrina":
         for index, product in enumerate(showcase):
             render_product_card(product, eager_image=(index == 0))
     else:
-        st.info(
-            "Nessun prodotto disponibile in vetrina al momento. "
-            "Ricarica la pagina tra poco."
-        )
+        st.info("La vetrina è temporaneamente non disponibile.")
+        st.link_button("Scopri le offerte su Amazon",
+                       amazon_api.build_amazon_search_link("offerte del giorno"),
+                       use_container_width=True)
 
 elif active_tab == "cerca":
     st.markdown(
@@ -1503,7 +1531,7 @@ elif active_tab == "cerca":
         key="search_prime_only",
     )
 
-    if submitted:
+    if submitted and _search_allowed():
         st.session_state["last_search"] = {
             "keyword": str(
                 st.session_state.get("search_keyword_input") or ""
@@ -1522,6 +1550,14 @@ elif active_tab == "cerca":
 
     if st.session_state.get("search_notice"):
         st.info(st.session_state["search_notice"])
+
+    st.link_button(
+        "Continua la ricerca su Amazon",
+        amazon_api.build_amazon_search_link(
+            str(st.session_state.get("search_keyword_input") or "offerte")
+        ),
+        use_container_width=True,
+    )
 
     results = st.session_state.get("offerte", [])
 

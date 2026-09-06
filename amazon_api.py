@@ -24,6 +24,7 @@ from urllib.parse import (
 )
 
 import requests
+import api_budget
 import streamlit as st
 from bs4 import BeautifulSoup
 
@@ -44,7 +45,7 @@ TOKEN_SCOPE = "creatorsapi::default"
 MAX_RESULTS = 50
 MAX_SEARCH_PAGES = 10
 SEARCH_CACHE_TTL = 10 * 60
-PRICE_CACHE_TTL = 2 * 60
+PRICE_CACHE_TTL = 10 * 60
 HTTP_TIMEOUT = 8
 HTML_TIMEOUT = 12
 HTML_CACHE_TTL = 180
@@ -288,6 +289,26 @@ def _amazon_secrets() -> dict[str, Any]:
         return {}
 
 
+def budget_settings() -> tuple[int, float]:
+    cfg = _amazon_secrets()
+    try:
+        limit = max(0, int(cfg.get("daily_request_budget", 800)))
+        interval = max(1.1, float(cfg.get("request_interval_seconds", 1.1)))
+        if not math.isfinite(interval):
+            interval = 1.1
+        return limit, interval
+    except (TypeError, ValueError, OverflowError):
+        return 800, 1.1
+
+
+def get_request_usage() -> dict[str, Any]:
+    return api_budget.usage(budget_settings()[0])
+
+
+def html_fallback_enabled() -> bool:
+    return _amazon_secrets().get("enable_html_fallback", False) is True
+
+
 def get_partner_tag() -> str:
     """Restituisce il Partner Tag configurato nei Secrets."""
     return str(_amazon_secrets().get("partner_tag", "")).strip()
@@ -442,6 +463,10 @@ def _api_post(operation: str, payload: dict[str, Any]) -> Optional[dict[str, Any
             "x-marketplace": MARKETPLACE,
         }
 
+        # Ogni tentativo, inclusi i retry, consuma il budget locale.
+        limit, interval = budget_settings()
+        api_budget.reserve(limit=limit, interval=interval)
+        LOGGER.info("Creators API usage: %s", get_request_usage())
         try:
             response = requests.post(
                 endpoint, json=payload, headers=headers, timeout=HTTP_TIMEOUT
@@ -2911,7 +2936,9 @@ def _search_page_cached(
         payload["maxPrice"] = max(1, int(round(float(max_price) * 100)))
 
     data = _api_post("searchItems", payload)
-    items = (((data or {}).get("searchResult") or {}).get("items") or [])
+    if data is None:
+        raise api_budget.BudgetUnavailable("Ricerca Amazon temporaneamente non disponibile")
+    items = ((data.get("searchResult") or {}).get("items") or [])
 
     clean_items: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2962,7 +2989,9 @@ def _get_items_cached(
     }
 
     data = _api_post("getItems", payload)
-    response_data = data or {}
+    if data is None:
+        raise api_budget.BudgetUnavailable("Dettagli Amazon temporaneamente non disponibili")
+    response_data = data
 
     # Creators API attuale usa "itemResults".
     # "itemsResult" è mantenuto solo come compatibilità difensiva.
@@ -2997,7 +3026,7 @@ def ottieni_offerte_avanzate(
         return []
 
     target = max(1, min(int(item_count or 10), MAX_RESULTS))
-    query = " ".join(str(keyword or "").strip().split()) or "offerte del giorno"
+    query = " ".join(str(keyword or "").strip().split()).casefold() or "offerte del giorno"
     sort_value = SORT_MAPPINGS.get(sort_type, "Price:LowToHigh")
     cache_buster = str(_cache_buster or "normal-search")
 
@@ -3126,6 +3155,9 @@ def ottieni_offerte_avanzate(
     # 2) FALLBACK HTML SILENZIOSO.
     # Se API restituisce zero o pochi risultati, integriamo fino al target.
     # -----------------------------------------------------------------
+    if not html_fallback_enabled():
+        return products[:target]
+
     missing = target - len(products)
 
     html_products = _search_html_fallback(
@@ -3185,8 +3217,22 @@ def ottieni_offerte_avanzate(
     return products[:target]
 
 
-@st.cache_data(ttl=5 * 60, show_spinner=False, max_entries=96)
 def ottieni_vetrina_casuale(
+    partner_tag: Optional[str] = None,
+    item_count: int = 3,
+    refresh_token: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    # Un click o una nuova sessione non invalidano la vetrina condivisa.
+    del refresh_token
+    return _vetrina_condivisa(
+        get_partner_tag() or str(partner_tag or "").strip(),
+        max(1, min(int(item_count or 3), 3)),
+        str(int(time.time() // 1800)),
+    )
+
+
+@st.cache_data(ttl=30 * 60, show_spinner=False, max_entries=32)
+def _vetrina_condivisa(
     partner_tag: Optional[str] = None,
     item_count: int = 3,
     refresh_token: Optional[str] = None,
@@ -3437,6 +3483,8 @@ def ottieni_haul_casuale(
         return []
 
     target = max(1, min(int(item_count or 10), 10))
+    if not html_fallback_enabled():
+        return []
     html_text = _get_amazon_html_cached(HAUL_STORE_URL)
 
     if not html_text:
