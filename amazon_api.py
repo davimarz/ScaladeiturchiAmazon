@@ -33,9 +33,13 @@ MAX_SEARCH_PAGES = 10
 SEARCH_CACHE_TTL = 10 * 60
 PRICE_CACHE_TTL = 2 * 60
 HTTP_TIMEOUT = 8
-HTML_TIMEOUT = 10
+HTML_TIMEOUT = 8
 HTML_CACHE_TTL = 180
+DETAIL_SNAPSHOT_TTL = 75
 DETAIL_PRICE_WORKERS = 4
+CREATORS_403_COOLDOWN = 15 * 60
+SEARCH_HTML_CACHE_MAX = 24
+DETAIL_SNAPSHOT_CACHE_MAX = 256
 
 RE_ASIN = re.compile(
     r"(?:/dp/|/gp/product/|/d/|^)([A-Z0-9]{10})(?:[/?&#]|$)",
@@ -57,6 +61,14 @@ RE_MONTHLY_BOUGHT = re.compile(
 
 
 _HTML_CACHE: dict[str, tuple[float, str]] = {}
+_DETAIL_SNAPSHOT_CACHE: dict[
+    str,
+    tuple[float, tuple[Optional[float], Optional[float], int, Optional[int], str]],
+] = {}
+_CACHE_LOCK = threading.RLock()
+_HTTP_LOCAL = threading.local()
+_CREATORS_BLOCK_LOCK = threading.Lock()
+_CREATORS_BLOCKED_UNTIL = 0.0
 
 USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -96,6 +108,38 @@ _LAST_API_STATUS: dict[str, Any] = {
     "status_code": None,
     "message": "",
 }
+
+
+def _creators_temporarily_blocked() -> bool:
+    with _CREATORS_BLOCK_LOCK:
+        return time.time() < _CREATORS_BLOCKED_UNTIL
+
+
+def _block_creators_temporarily() -> None:
+    global _CREATORS_BLOCKED_UNTIL
+    with _CREATORS_BLOCK_LOCK:
+        _CREATORS_BLOCKED_UNTIL = max(
+            _CREATORS_BLOCKED_UNTIL,
+            time.time() + CREATORS_403_COOLDOWN,
+        )
+
+
+def _clear_creators_block() -> None:
+    global _CREATORS_BLOCKED_UNTIL
+    with _CREATORS_BLOCK_LOCK:
+        _CREATORS_BLOCKED_UNTIL = 0.0
+
+
+def _get_http_session() -> requests.Session:
+    session = getattr(_HTTP_LOCAL, "requests_session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.7,en;q=0.6",
+        })
+        _HTTP_LOCAL.requests_session = session
+    return session
 
 
 def _set_api_status(operation: str, status_code: Optional[int], message: str = "") -> None:
@@ -236,6 +280,11 @@ def get_creators_access_token(force_refresh: bool = False) -> Optional[str]:
 
 
 def _api_post(operation: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    # Dopo AssociateNotEligible evitiamo di ripetere una richiesta che Amazon
+    # rifiuterebbe comunque. Ogni 15 minuti il backend riprova automaticamente.
+    if _creators_temporarily_blocked():
+        return None
+
     endpoint = f"{CREATORS_API_BASE}/{operation}"
     force_refresh = False
 
@@ -253,25 +302,21 @@ def _api_post(operation: str, payload: dict[str, Any]) -> Optional[dict[str, Any
 
         try:
             response = requests.post(
-                endpoint,
-                json=payload,
-                headers=headers,
-                timeout=HTTP_TIMEOUT,
+                endpoint, json=payload, headers=headers, timeout=HTTP_TIMEOUT
             )
         except requests.RequestException as exc:
             if attempt < 2:
                 time.sleep(0.5 * (2**attempt))
                 continue
             LOGGER.error(
-                "Creators API %s: errore rete %s",
-                operation,
-                type(exc).__name__,
+                "Creators API %s: errore rete %s", operation, type(exc).__name__
             )
             return None
 
         if response.status_code == 200:
             try:
                 data = response.json()
+                _clear_creators_block()
                 _set_api_status(operation, 200, "OK")
                 return data
             except ValueError:
@@ -302,6 +347,18 @@ def _api_post(operation: str, payload: dict[str, Any]) -> Optional[dict[str, Any
             pass
 
         _set_api_status(operation, response.status_code, reason or "Errore API")
+
+        if (
+            response.status_code == 403
+            and "associatenoteligible" in reason.replace(" ", "").lower()
+        ):
+            _block_creators_temporarily()
+            LOGGER.warning(
+                "Creators API temporaneamente non idonea: fallback HTML per %s minuti.",
+                CREATORS_403_COOLDOWN // 60,
+            )
+            return None
+
         LOGGER.error(
             "Creators API %s: HTTP %s%s",
             operation,
@@ -806,48 +863,79 @@ def _extract_old_price_from_same_core(
     return min(candidates)
 
 
-def _extract_detail_page_prices(
-    html_text: str,
+def _extract_detail_prices_from_soup(
+    soup: BeautifulSoup,
 ) -> tuple[Optional[float], Optional[float], int]:
-    """Estrae solo prezzi ad alta confidenza dalla pagina prodotto."""
-    if not html_text:
-        return None, None, 0
-
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    current_price, current_node, selector_used = _extract_price_from_primary_core(
-        soup
-    )
-
+    current_price, current_node, selector_used = _extract_price_from_primary_core(soup)
     if current_price <= 0:
         return None, None, 0
 
-    old_price = _extract_old_price_from_same_core(
-        soup,
-        current_price,
-        current_node,
-    )
-
+    old_price = _extract_old_price_from_same_core(soup, current_price, current_node)
     discount_value = 0
     if old_price is not None and old_price > current_price:
-        discount_value = int(
-            round(((old_price - current_price) / old_price) * 100)
-        )
+        discount_value = int(round(((old_price - current_price) / old_price) * 100))
 
     LOGGER.info(
         "Detail price verified selector=%s current=%.2f old=%s",
-        selector_used,
-        current_price,
+        selector_used, current_price,
         f"{old_price:.2f}" if old_price is not None else "n/a",
     )
-
     return float(current_price), old_price, discount_value
+
+
+def _extract_detail_page_prices(
+    html_text: str,
+) -> tuple[Optional[float], Optional[float], int]:
+    if not html_text:
+        return None, None, 0
+    soup = BeautifulSoup(html_text, "html.parser")
+    return _extract_detail_prices_from_soup(soup)
+
+
+def _extract_detail_snapshot(
+    html_text: str,
+) -> tuple[Optional[float], Optional[float], int, Optional[int], str]:
+    if not html_text:
+        return None, None, 0, None, ""
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    final_price, old_price, discount_value = _extract_detail_prices_from_soup(soup)
+    sold_qty, sold_label = _extract_monthly_bought(soup)
+    return final_price, old_price, discount_value, sold_qty, sold_label
+
+
+def _get_detail_snapshot_cached(
+    detail_url: str,
+) -> tuple[Optional[float], Optional[float], int, Optional[int], str]:
+    now = time.time()
+
+    with _CACHE_LOCK:
+        cached = _DETAIL_SNAPSHOT_CACHE.get(detail_url)
+        if cached:
+            cached_at, snapshot = cached
+            if now - cached_at < DETAIL_SNAPSHOT_TTL:
+                return snapshot
+            _DETAIL_SNAPSHOT_CACHE.pop(detail_url, None)
+
+    html_text = _fetch_amazon_html(detail_url)
+    snapshot = _extract_detail_snapshot(html_text or "")
+
+    with _CACHE_LOCK:
+        _DETAIL_SNAPSHOT_CACHE[detail_url] = (now, snapshot)
+        if len(_DETAIL_SNAPSHOT_CACHE) > DETAIL_SNAPSHOT_CACHE_MAX:
+            oldest = sorted(
+                _DETAIL_SNAPSHOT_CACHE.items(), key=lambda pair: pair[1][0]
+            )
+            for key, _ in oldest[: len(_DETAIL_SNAPSHOT_CACHE) - DETAIL_SNAPSHOT_CACHE_MAX]:
+                _DETAIL_SNAPSHOT_CACHE.pop(key, None)
+
+    return snapshot
 
 
 def _verify_product_detail_price(
     product: dict[str, Any],
 ) -> dict[str, Any]:
-    """Verifica il prezzo sulla pagina del singolo prodotto."""
+    """Verifica il prezzo sulla pagina prodotto con cache compatta."""
     verified = dict(product)
 
     asin = str(verified.get("asin") or "").strip().upper()
@@ -858,17 +946,11 @@ def _verify_product_detail_price(
     if not detail_url:
         detail_url = f"https://www.amazon.it/dp/{asin}?th=1"
 
-    html_text = _get_amazon_html_cached(detail_url)
-    if not html_text:
-        return verified
-
-    final_price, old_price, discount_value = _extract_detail_page_prices(
-        html_text
+    final_price, old_price, discount_value, sold_qty, sold_label = (
+        _get_detail_snapshot_cached(detail_url)
     )
 
     if final_price is None or final_price <= 0:
-        # Il prezzo della SERP può riferirsi a una variante/offerta diversa.
-        # Lo conserviamo soltanto internamente, ma non lo mostriamo come certo.
         verified["_search_prezzo_finale"] = verified.get("prezzo_finale")
         verified["_search_prezzo_iniziale"] = verified.get("prezzo_iniziale")
         verified["prezzo_finale"] = None
@@ -881,22 +963,14 @@ def _verify_product_detail_price(
 
     verified["prezzo_finale"] = float(final_price)
     verified["prezzo_iniziale"] = (
-        float(old_price)
-        if old_price is not None and old_price > final_price
+        float(old_price) if old_price is not None and old_price > final_price
         else float(final_price)
     )
     verified["prezzo_verificato"] = True
     verified["sconto_val"] = int(discount_value)
-    verified["sconto"] = (
-        f"-{discount_value}%"
-        if discount_value > 0
-        else ""
-    )
+    verified["sconto"] = f"-{discount_value}%" if discount_value > 0 else ""
     verified["source"] = "amazon_html_detail_verified"
 
-    # La pagina dettaglio può esporre anche il social proof mensile.
-    soup = BeautifulSoup(html_text, "html.parser")
-    sold_qty, sold_label = _extract_monthly_bought(soup)
     if sold_qty is not None:
         verified["sold_qty_month"] = sold_qty
         verified["sold_qty_label"] = sold_label
@@ -983,47 +1057,40 @@ def _html_response_is_usable(status_code: int, text: str) -> bool:
 
 
 def _fetch_amazon_html(url: str) -> Optional[str]:
-    """Scarica HTML Amazon. curl_cffi è il primo tentativo, requests il secondo."""
+    """Scarica HTML Amazon con un percorso veloce e un solo fallback."""
     headers = {
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.7,en;q=0.6",
         "Accept": (
             "text/html,application/xhtml+xml,application/xml;q=0.9,"
             "image/avif,image/webp,*/*;q=0.8"
         ),
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
     }
-    cookies = {
-        "lc-acbit": "it_IT",
-        "i18n-prefs": "EUR",
-    }
+    cookies = {"lc-acbit": "it_IT", "i18n-prefs": "EUR"}
 
+    # Prima versione: curl_cffi con impersonazione Chrome. Niente sequenza di
+    # 4 browser diversi: in caso di blocco si passa subito al fallback.
     if HAS_CURL_CFFI and c_requests is not None:
-        # Le versioni supportate dipendono dalla release di curl_cffi.
-        # Ogni tentativo è isolato: un impersonate non supportato non blocca gli altri.
-        for impersonate in ("chrome", "chrome124", "chrome120", "safari17_0"):
-            try:
-                response = c_requests.get(
-                    url,
-                    impersonate=impersonate,
-                    timeout=HTML_TIMEOUT,
-                    headers=headers,
-                    cookies=cookies,
-                    allow_redirects=True,
-                )
-                if _html_response_is_usable(response.status_code, response.text):
-                    return response.text
-            except Exception:
-                continue
+        try:
+            response = c_requests.get(
+                url,
+                impersonate="chrome",
+                timeout=HTML_TIMEOUT,
+                headers=headers,
+                cookies=cookies,
+                allow_redirects=True,
+            )
+            if _html_response_is_usable(response.status_code, response.text):
+                return response.text
+        except Exception:
+            pass
 
+    # Seconda e ultima versione: Session HTTP riutilizzata per thread, quindi
+    # keep-alive/TLS vengono riusati nelle scansioni successive.
     try:
-        session = requests.Session()
-        request_headers = dict(headers)
-        request_headers["User-Agent"] = random.choice(USER_AGENTS)
-
+        session = _get_http_session()
         response = session.get(
             url,
-            headers=request_headers,
+            headers=headers,
             cookies=cookies,
             timeout=HTML_TIMEOUT,
             allow_redirects=True,
@@ -1037,25 +1104,26 @@ def _fetch_amazon_html(url: str) -> Optional[str]:
 
 
 def _get_amazon_html_cached(url: str) -> Optional[str]:
+    """Cache breve solo per pagine di ricerca Amazon."""
     now = time.time()
 
-    cached = _HTML_CACHE.get(url)
-    if cached:
-        cached_at, html_text = cached
-        if now - cached_at < HTML_CACHE_TTL and html_text:
-            return html_text
+    with _CACHE_LOCK:
+        cached = _HTML_CACHE.get(url)
+        if cached:
+            cached_at, html_text = cached
+            if now - cached_at < HTML_CACHE_TTL and html_text:
+                return html_text
+            _HTML_CACHE.pop(url, None)
 
     html_text = _fetch_amazon_html(url)
-    if html_text:
-        _HTML_CACHE[url] = (now, html_text)
+    if not html_text:
+        return None
 
-        # Limite semplice per evitare crescita indefinita su Streamlit.
-        if len(_HTML_CACHE) > 80:
-            oldest = sorted(
-                _HTML_CACHE.items(),
-                key=lambda pair: pair[1][0],
-            )[:20]
-            for key, _ in oldest:
+    with _CACHE_LOCK:
+        _HTML_CACHE[url] = (now, html_text)
+        if len(_HTML_CACHE) > SEARCH_HTML_CACHE_MAX:
+            oldest = sorted(_HTML_CACHE.items(), key=lambda pair: pair[1][0])
+            for key, _ in oldest[: len(_HTML_CACHE) - SEARCH_HTML_CACHE_MAX]:
                 _HTML_CACHE.pop(key, None)
 
     return html_text
@@ -1101,25 +1169,6 @@ def _extract_monthly_bought(item: Any) -> tuple[Optional[int], str]:
 
     shown = f"{qty:,}".replace(",", ".")
     return qty, f"{shown}+ acquistati nel mese scorso"
-
-def _extract_html_review_count(item: Any) -> Optional[int]:
-    review_element = (
-        item.select_one("span.a-size-base.s-underline-text")
-        or item.select_one("a[href*='customerReviews'] span")
-        or item.select_one("a[href*='#customerReviews'] span")
-    )
-    if not review_element:
-        return None
-
-    digits = RE_DIGITS.sub("", review_element.get_text(" ", strip=True))
-    if not digits:
-        return None
-
-    try:
-        value = int(digits)
-        return value if value >= 0 else None
-    except ValueError:
-        return None
 
 
 def _extract_html_prime(item: Any) -> bool:
@@ -1280,7 +1329,6 @@ def _extract_products_from_html(
             if price <= 0 or price > float(max_price):
                 continue
 
-        reviews = _extract_html_review_count(item)
         sold_qty_month, sold_qty_label = _extract_monthly_bought(item)
 
         product = {
@@ -1289,7 +1337,7 @@ def _extract_products_from_html(
             "immagine_url": image_url,
             "prezzo_iniziale": old_price,
             "prezzo_finale": price if price > 0 else None,
-            "prezzo_verificato": bool(price > 0),
+            "prezzo_verificato": False,
             "sconto": (
                 f"-{discount_value}%"
                 if discount_value > 0
@@ -1304,7 +1352,6 @@ def _extract_products_from_html(
             # Il conteggio recensioni viene usato soltanto come tie-break
             # interno quando l'utente sceglie "Quantità vendite".
             # Non viene mostrato come vendite reali.
-            "_html_reviews": reviews,
             "sold_qty_month": sold_qty_month,
             "sold_qty_label": sold_qty_label,
             "sales_rank": None,
@@ -1334,6 +1381,7 @@ def _search_html_fallback(
     max_price: Optional[float],
     item_count: int,
     cache_buster: str = "",
+    exclude_asins: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], ...]:
     # cache_buster consente alla Vetrina di ottenere un set nuovo quando richiesto.
     del cache_buster
@@ -1345,7 +1393,8 @@ def _search_html_fallback(
     target = max(1, min(int(item_count or 10), MAX_RESULTS))
 
     collected: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    excluded = {str(asin).strip().upper() for asin in exclude_asins if asin}
+    seen: set[str] = set(excluded)
 
     # Una pagina Amazon contiene in genere più di 10 risultati.
     # Si limita il numero di fetch per non sovraccaricare né Amazon né Streamlit.
@@ -1409,21 +1458,27 @@ def _search_html_fallback(
             len(page_products),
         )
 
-        # Verifica finale del prezzo sulla pagina prodotto.
-        # Limitiamo la verifica ai prodotti utili per raggiungere il target.
-        remaining = max(0, target - len(collected))
-        if remaining > 0 and page_products:
-            page_products = _verify_products_detail_prices(
-                list(page_products[:remaining])
-            )
+        # Prima eliminiamo ASIN già caricati; così "Carica altri 10" non
+        # riapre le pagine dettaglio dei prodotti già presenti nella sessione.
+        candidates: list[dict[str, Any]] = []
+        page_seen: set[str] = set()
+        for page_index, product in enumerate(page_products):
+            asin = str(product.get("asin") or "").strip().upper()
+            if len(asin) != 10 or asin in seen or asin in page_seen:
+                continue
+            page_seen.add(asin)
+            product.setdefault("_amazon_position", (page - 1) * 100 + page_index)
+            candidates.append(product)
 
-        for product in page_products:
+        remaining = max(0, target - len(collected))
+        if remaining > 0 and candidates:
+            candidates = _verify_products_detail_prices(candidates[:remaining])
+
+        for product in candidates:
             asin = str(product.get("asin") or "").strip().upper()
             if len(asin) != 10 or asin in seen:
                 continue
-
             seen.add(asin)
-            product.setdefault("_amazon_position", len(collected))
             collected.append(product)
 
         if len(collected) >= target:
@@ -1581,6 +1636,7 @@ def ottieni_offerte_avanzate(
     sottocategoria: str = "",
     _partner_tag_override: Optional[str] = None,
     _cache_buster: Optional[str] = None,
+    exclude_asins: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     del categoria, sottocategoria
 
@@ -1595,7 +1651,10 @@ def ottieni_offerte_avanzate(
     cache_buster = str(_cache_buster or "normal-search")
 
     products: list[dict[str, Any]] = []
-    seen_asins: set[str] = set()
+    excluded_asins = {
+        str(asin).strip().upper() for asin in exclude_asins if asin
+    }
+    seen_asins: set[str] = set(excluded_asins)
 
     # -----------------------------------------------------------------
     # 1) CREATORS API: prima scelta.
@@ -1723,9 +1782,9 @@ def ottieni_offerte_avanzate(
         require_prime=bool(solo_spedizione_gratuita),
         min_price=min_price,
         max_price=max_price,
-        # Chiediamo un po' più del necessario per assorbire duplicati API/HTML.
-        item_count=min(MAX_RESULTS, max(target, missing + 10)),
+        item_count=max(1, missing),
         cache_buster=cache_buster,
+        exclude_asins=tuple(sorted(seen_asins)),
     )
 
     for product in html_products:

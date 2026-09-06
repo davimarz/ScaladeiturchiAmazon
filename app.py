@@ -43,6 +43,7 @@ st.session_state.setdefault("search_sort", "Prezzo minimo")
 st.session_state.setdefault("search_keyword_input", "")
 st.session_state.setdefault("search_prime_only", False)
 st.session_state.setdefault("scroll_to_current_results_page", False)
+st.session_state.setdefault("no_more_results", False)
 
 # La scheda Contatti resta nel codice ma non è visibile/raggiungibile
 # dalla navigazione pubblica.
@@ -723,8 +724,9 @@ def _perform_search(target_count: int) -> None:
         normalized_results,
         str(cfg.get("sort") or "Prezzo minimo"),
     )
-    st.session_state["item_count"] = target_count
+    st.session_state["item_count"] = len(normalized_results)
     st.session_state["has_searched"] = True
+    st.session_state["no_more_results"] = False
 
     if not results:
         # Non mostriamo all'utente differenze tra API e fallback HTML.
@@ -739,27 +741,67 @@ def _perform_search(target_count: int) -> None:
         st.session_state["search_notice"] = ""
 
 def _load_more() -> None:
-    current_target = int(st.session_state.get("item_count", 10) or 10)
+    existing = list(st.session_state.get("offerte", []))
+    previous_count = len(existing)
 
-    if current_target >= MAX_RESULTS:
+    if previous_count >= MAX_RESULTS:
         st.session_state["search_notice"] = (
             f"Limite di {MAX_RESULTS} prodotti raggiunto."
         )
         return
 
-    new_target = min(MAX_RESULTS, current_target + 10)
-    previous_count = len(st.session_state.get("offerte", []))
-    _perform_search(new_target)
+    add_count = min(10, MAX_RESULTS - previous_count)
+    cfg = st.session_state["last_search"]
+    excluded_asins = tuple(
+        sorted(
+            {
+                str(product.get("asin") or "").strip().upper()
+                for product in existing
+                if str(product.get("asin") or "").strip()
+            }
+        )
+    )
 
-    new_count = len(st.session_state.get("offerte", []))
+    with st.spinner("Caricamento di altri prodotti..."):
+        new_results = amazon_api.ottieni_offerte_avanzate(
+            keyword=cfg["keyword"],
+            sort_type=cfg["sort"],
+            solo_spedizione_gratuita=cfg["prime_only"],
+            item_count=add_count,
+            exclude_asins=excluded_asins,
+        )
 
+    existing_asins = set(excluded_asins)
+    merged = list(existing)
+    for product in list(new_results or []):
+        asin = str(product.get("asin") or "").strip().upper()
+        if not asin or asin in existing_asins:
+            continue
+        product.setdefault("_loaded_position", len(merged))
+        existing_asins.add(asin)
+        merged.append(product)
+        if len(merged) >= MAX_RESULTS:
+            break
+
+    st.session_state["offerte"] = _sort_loaded_products(
+        merged, str(cfg.get("sort") or "Prezzo minimo")
+    )
+    st.session_state["item_count"] = len(merged)
+    st.session_state["has_searched"] = True
+
+    new_count = len(merged)
     if new_count > previous_count:
         st.session_state["current_page"] = max(1, (new_count + 9) // 10)
-        # Al rerun successivo scorriamo direttamente al primo prodotto
-        # della nuova pagina appena caricata.
         st.session_state["scroll_to_current_results_page"] = True
+        st.session_state["no_more_results"] = False
+        added = new_count - previous_count
+        st.session_state["search_notice"] = (
+            "" if added == add_count
+            else f"Aggiunti {added} nuovi prodotti."
+        )
     else:
         st.session_state["scroll_to_current_results_page"] = False
+        st.session_state["no_more_results"] = True
         st.session_state["search_notice"] = (
             "Non risultano altri prodotti disponibili per questa ricerca."
         )
@@ -1220,6 +1262,7 @@ elif active_tab == "cerca":
         }
         st.session_state["current_page"] = 1
         st.session_state["item_count"] = 10
+        st.session_state["no_more_results"] = False
         _perform_search(10)
 
     if st.session_state.get("search_notice"):
@@ -1280,7 +1323,10 @@ elif active_tab == "cerca":
             "➕ Carica altri 10 prodotti ⬇️",
             on_click=_load_more,
             use_container_width=True,
-            disabled=int(st.session_state.get("item_count", 10)) >= MAX_RESULTS,
+            disabled=(
+                len(results) >= MAX_RESULTS
+                or bool(st.session_state.get("no_more_results", False))
+            ),
         )
 
         if st.session_state.get("scroll_to_current_results_page", False):

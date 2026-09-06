@@ -1,135 +1,32 @@
-# Scala dei Turchi - Streamlit Amazon Hybrid
+# Scala dei Turchi – Amazon Streamlit
 
-## Flusso prodotti
+Web app Streamlit con ricerca Amazon, Vetrina, paginazione e schede prodotto.
 
-1. La web app prova prima Amazon Creators API.
-2. Se Creators API restituisce abbastanza prodotti, usa esclusivamente quelli.
-3. Se Creators API fallisce (incluso HTTP 403 AssociateNotEligible), restituisce
-   zero risultati o restituisce meno prodotti del necessario, il backend passa
-   automaticamente al fallback HTML.
-4. L'utente non vede errori API o pulsanti di fallback: vede soltanto le schede
-   prodotto disponibili nella pagina della web app.
-5. La ricerca iniziale mostra fino a 10 prodotti; `Carica altri 10` aumenta il
-   target fino a 50.
+## Flusso dati
 
-## Dati HTML
+1. Creators API viene tentata per prima.
+2. In caso di `AssociateNotEligible` il backend attiva un circuit breaker di 15 minuti e usa il fallback HTML senza ripetere 403 a ogni ricerca.
+3. Il fallback HTML trova ASIN/titolo/immagine.
+4. Il prezzo viene verificato sulla pagina dettaglio `corePrice` prima di essere mostrato.
+5. `Carica altri 10` recupera solo ASIN nuovi: non rivalida i prodotti già caricati.
 
-Il fallback HTML prova a leggere soltanto dati presenti nella pagina Amazon:
-- ASIN
-- titolo
-- immagine
-- prezzo
-- eventuale prezzo precedente e sconto calcolato
-- presenza Prime
+## Ottimizzazioni V14
 
-Non vengono inventati recensioni, vendite, prezzi o spedizioni.
+- un solo tentativo `curl_cffi` + un fallback `requests`;
+- keep-alive HTTP con Session per thread;
+- cache HTML ricerca limitata a 24 pagine;
+- cache compatta del prezzo dettaglio (non conserva tutto l'HTML prodotto);
+- cache e stato condiviso protetti da lock;
+- circuit breaker Creators API dopo 403 `AssociateNotEligible`;
+- caricamento incrementale reale di +10 prodotti;
+- nessuna riapertura delle pagine dettaglio già caricate;
+- prezzo HTML non considerato verificato finché il `corePrice` dettaglio non è stato letto.
 
-## Dipendenze
+## File
 
-- Streamlit
-- requests
-- BeautifulSoup
-- curl_cffi
+- `app.py` – UI e stato Streamlit
+- `amazon_api.py` – Creators API + fallback HTML
+- `requirements.txt` – dipendenze
+- `.gitignore` – esclude secrets/cache/file locali
 
-## Nota tecnica
-
-Il fallback HTML è meno stabile dell'API ufficiale e può smettere di funzionare
-se Amazon cambia markup o blocca le richieste dal server Streamlit. Creators API
-rimane sempre la fonte prioritaria.
-
-
-## V7 - correzione ricerca
-
-Problema corretto: il fallback HTML della ricerca con "Prezzo minimo" aggiungeva
-il parametro Amazon `s=price-asc-rank`, mentre la Vetrina usava una pagina
-standard. Su Streamlit la variante ordinata poteva restituire markup diverso o
-non parsabile.
-
-Ora:
-- Vetrina e Cerca usano lo stesso recupero HTML standard;
-- "Prezzo minimo" viene ordinato localmente dopo l'estrazione;
-- se il primo URL HTML produce zero schede, viene provato anche l'URL alternativo;
-- è stato eliminato il doppio messaggio "Nessun prodotto trovato";
-- il fallback "Quantità vendite" non usa più le recensioni come vendite.
-
-
-## V8 - ordinamento in tempo reale
-
-- `Prezzo minimo` e `Quantità vendite` sono ora widget fuori dal form.
-- Il click sul radio riordina immediatamente tutte le schede già caricate.
-- Non viene eseguita una nuova richiesta Amazon quando si cambia ordinamento.
-- Se sono stati caricati 20, 30, 40 o 50 prodotti, viene riordinato l'intero set.
-- Dopo il cambio ordinamento si torna automaticamente alla pagina 1.
-- Per i prodotti API si usa `WebsiteSalesRank` quando disponibile.
-- Per il fallback HTML si conserva l'ordine originale Amazon in
-  `_amazon_position`, così è possibile ripristinarlo dopo un ordinamento prezzo.
-
-
-## V9 - feedback quantità vendite
-- Mostra `X+ acquistati nel mese scorso` quando Amazon espone il dato.
-- La quantità è una soglia minima mensile, non il totale storico.
-- Ordinamento Quantità vendite:
-  1. quantità mensile decrescente;
-  2. WebsiteSalesRank crescente;
-  3. ordine Amazon.
-- Il cambio ordinamento resta immediato.
-
-
-## V10 - scroll automatico dopo Carica altri 10
-
-Quando si preme `Carica altri 10 prodotti`:
-1. vengono recuperati i nuovi prodotti;
-2. `current_page` passa alla pagina appena aggiunta;
-3. dopo il rerun Streamlit la pagina scorre automaticamente;
-4. lo scroll termina esattamente prima della prima scheda della pagina corrente;
-5. il comportamento è one-shot e non si ripete nei rerun successivi.
-
-
-## V11 - pulsanti paginazione su una sola riga
-
-- I pulsanti P.1, P.2, P.3... restano affiancati orizzontalmente.
-- Il layout non viene impilato verticalmente su smartphone.
-- Con il limite di 50 prodotti ci sono al massimo 5 pulsanti.
-- Se lo spazio fosse insufficiente, il contenitore può scorrere orizzontalmente.
-- Cliccando una pagina, lo scroll porta al primo prodotto della pagina scelta.
-
-
-## V12 - verifica prezzo sulla pagina dettaglio
-
-Per i prodotti recuperati dal fallback HTML:
-
-1. la pagina di ricerca trova ASIN, titolo, immagine e URL;
-2. viene aperta la pagina dettaglio del singolo prodotto;
-3. il parser dà priorità a:
-   - `#corePrice_feature_div`
-   - `#corePriceDisplay_desktop_feature_div`
-   - `#apex_offerDisplay_desktop`
-   - `#apex_offerDisplay_mobile`
-   - `[data-feature-name='corePrice']`
-4. il prezzo corrente viene letto da `.a-price .a-offscreen`;
-5. il prezzo barrato viene letto separatamente e lo sconto ricalcolato;
-6. il prezzo della pagina ricerca resta solo fallback se la pagina dettaglio
-   non è leggibile;
-7. le verifiche avvengono con massimo 4 richieste concorrenti e cache HTML.
-
-Questo evita casi in cui la pagina dei risultati mostra un prezzo relativo a
-un'altra variante/offerta rispetto alla pagina prodotto.
-
-
-## V13 - prezzo corePrice ad alta confidenza
-
-Correzione fondamentale:
-- `data-a-color="base"` / `apexPriceToPay` ha priorità assoluta;
-- viene letto prima il prezzo VISIBILE `a-price-whole` + `a-price-fraction`;
-- `data-a-color="price"` non viene più privilegiato perché può rappresentare
-  prezzi secondari/promozionali nello stesso widget;
-- il prezzo vecchio viene cercato soltanto nello stesso `corePrice`;
-- tra più riferimenti validi viene scelto il più vicino sopra il prezzo corrente;
-- se la pagina dettaglio non produce un prezzo ad alta confidenza, il prezzo
-  della pagina risultati NON viene più mostrato come prezzo verificato.
-
-Test inclusi:
-- 13,95 prevale su un prezzo secondario 27,33;
-- 38,78 prevale su un prezzo secondario 31,79;
-- prezzo vecchio corretto 43,00 prevale rispetto a 35,25, che è inferiore
-  al prezzo corrente e quindi viene escluso.
+Le credenziali devono restare nei Secrets di Streamlit Cloud e non nel repository.
