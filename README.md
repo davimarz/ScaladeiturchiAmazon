@@ -92,3 +92,25 @@ Quando si preme `Carica altri 10 prodotti`:
 - Con il limite di 50 prodotti ci sono al massimo 5 pulsanti.
 - Se lo spazio fosse insufficiente, il contenitore può scorrere orizzontalmente.
 - Cliccando una pagina, lo scroll porta al primo prodotto della pagina scelta.
+
+
+## V12 - verifica prezzo sulla pagina dettaglio
+
+Per i prodotti recuperati dal fallback HTML:
+
+1. la pagina di ricerca trova ASIN, titolo, immagine e URL;
+2. viene aperta la pagina dettaglio del singolo prodotto;
+3. il parser dà priorità a:
+   - `#corePrice_feature_div`
+   - `#corePriceDisplay_desktop_feature_div`
+   - `#apex_offerDisplay_desktop`
+   - `#apex_offerDisplay_mobile`
+   - `[data-feature-name='corePrice']`
+4. il prezzo corrente viene letto da `.a-price .a-offscreen`;
+5. il prezzo barrato viene letto separatamente e lo sconto ricalcolato;
+6. il prezzo della pagina ricerca resta solo fallback se la pagina dettaglio
+   non è leggibile;
+7. le verifiche avvengono con massimo 4 richieste concorrenti e cache HTML.
+
+Questo evita casi in cui la pagina dei risultati mostra un prezzo relativo a
+un'altra variante/offerta rispetto alla pagina prodotto.

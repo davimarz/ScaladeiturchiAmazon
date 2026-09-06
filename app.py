@@ -910,8 +910,10 @@ def render_product_card(product: dict) -> None:
     badges_html = "".join(badge_parts)
 
     source = str(product.get("source") or "")
-    if source == "amazon_html":
-        note = "Prezzo rilevato dalla pagina Amazon; può variare."
+    if source == "amazon_html_detail_verified":
+        note = "Prezzo verificato sulla pagina del prodotto Amazon; può variare."
+    elif source.startswith("amazon_html"):
+        note = "Prezzo rilevato dai risultati Amazon; può variare."
     else:
         note = "Prezzo verificato tramite i dati Amazon disponibili."
 

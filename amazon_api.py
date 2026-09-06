@@ -7,8 +7,9 @@ import random
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 import streamlit as st
@@ -34,6 +35,7 @@ PRICE_CACHE_TTL = 2 * 60
 HTTP_TIMEOUT = 8
 HTML_TIMEOUT = 10
 HTML_CACHE_TTL = 180
+DETAIL_PRICE_WORKERS = 4
 
 RE_ASIN = re.compile(
     r"(?:/dp/|/gp/product/|/d/|^)([A-Z0-9]{10})(?:[/?&#]|$)",
@@ -554,6 +556,252 @@ def _search_item_to_product(
     }
 
 
+
+def _normalize_product_detail_url(href: str, asin: str) -> str:
+    """Costruisce l'URL dettaglio preservando i parametri utili alla variante."""
+    asin_clean = str(asin or "").strip().upper()
+    fallback = f"https://www.amazon.it/dp/{asin_clean}?th=1"
+
+    raw = str(href or "").strip()
+    if not raw:
+        return fallback
+
+    absolute = urljoin("https://www.amazon.it", raw)
+
+    try:
+        parsed = urlparse(absolute)
+        host = (parsed.hostname or "").lower()
+        if host not in {"amazon.it", "www.amazon.it"}:
+            return fallback
+
+        keep = {}
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key.lower() in {"th", "psc"}:
+                keep[key] = value
+
+        if "th" not in keep:
+            keep["th"] = "1"
+
+        return urlunparse(
+            parsed._replace(
+                scheme="https",
+                netloc="www.amazon.it",
+                query=urlencode(keep),
+                fragment="",
+            )
+        )
+    except Exception:
+        return fallback
+
+
+def _first_valid_price(elements: list[Any]) -> float:
+    for element in elements:
+        if element is None:
+            continue
+        value = _parse_html_price(element.get_text(" ", strip=True))
+        if value > 0:
+            return value
+    return 0.0
+
+
+def _extract_detail_page_prices(
+    html_text: str,
+) -> tuple[Optional[float], Optional[float], int]:
+    """Legge il prezzo dalla pagina dettaglio Amazon.
+
+    Priorità ai blocchi prezzo principali, compreso quello mostrato
+    nello screenshot dell'utente: #corePrice_feature_div.
+    """
+    if not html_text:
+        return None, None, 0
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    containers = [
+        soup.select_one("#corePrice_feature_div"),
+        soup.select_one("#corePriceDisplay_desktop_feature_div"),
+        soup.select_one("#apex_offerDisplay_desktop"),
+        soup.select_one("#apex_offerDisplay_mobile"),
+        soup.select_one("[data-feature-name='corePrice']"),
+        soup.select_one("#price"),
+    ]
+    containers = [node for node in containers if node is not None]
+
+    current_price = 0.0
+    old_price: Optional[float] = None
+
+    current_selectors = (
+        "span.a-price[data-a-color='price']:not(.a-text-price) span.a-offscreen",
+        "span.a-price[data-a-color='base']:not(.a-text-price) span.a-offscreen",
+        "span.a-price:not(.a-text-price):not([data-a-strike='true']) span.a-offscreen",
+        "span.a-price:not(.a-text-price) span.a-offscreen",
+        ".a-price .a-offscreen",
+    )
+
+    for container in containers:
+        candidates = []
+        for selector in current_selectors:
+            candidates.extend(container.select(selector))
+        current_price = _first_valid_price(candidates)
+        if current_price > 0:
+            break
+
+    # Fallback IDs storicamente usati da Amazon.
+    if current_price <= 0:
+        direct_candidates = [
+            soup.select_one("#price_inside_buybox"),
+            soup.select_one("#priceblock_ourprice"),
+            soup.select_one("#priceblock_dealprice"),
+            soup.select_one("#priceblock_saleprice"),
+            soup.select_one(".priceToPay .a-offscreen"),
+        ]
+        current_price = _first_valid_price(
+            [node for node in direct_candidates if node is not None]
+        )
+
+    # Ultimo fallback: whole + fraction, ma soltanto dentro i container principali.
+    if current_price <= 0:
+        for container in containers:
+            whole = container.select_one(
+                "span.a-price:not(.a-text-price) .a-price-whole"
+            )
+            fraction = container.select_one(
+                "span.a-price:not(.a-text-price) .a-price-fraction"
+            )
+            if whole:
+                whole_text = (
+                    whole.get_text("", strip=True)
+                    .replace(".", "")
+                    .replace(",", "")
+                )
+                fraction_text = (
+                    fraction.get_text("", strip=True)
+                    if fraction
+                    else "00"
+                )
+                try:
+                    candidate = float(f"{whole_text}.{fraction_text}")
+                except ValueError:
+                    candidate = 0.0
+
+                if candidate > 0:
+                    current_price = candidate
+                    break
+
+    old_selectors = (
+        "span.a-price[data-a-strike='true'] span.a-offscreen",
+        "span.a-price.a-text-price span.a-offscreen",
+        ".basisPrice span.a-offscreen",
+        "span[data-a-strike='true'] span.a-offscreen",
+    )
+
+    old_candidates = []
+    for container in containers:
+        for selector in old_selectors:
+            old_candidates.extend(container.select(selector))
+
+    # Se il prezzo barrato è fuori dal corePrice, prova comunque in pagina.
+    if not old_candidates:
+        for selector in old_selectors:
+            old_candidates.extend(soup.select(selector))
+
+    for element in old_candidates:
+        candidate = _parse_html_price(element.get_text(" ", strip=True))
+        if candidate > current_price > 0:
+            old_price = candidate
+            break
+
+    discount_value = 0
+    if old_price is not None and old_price > current_price > 0:
+        discount_value = int(
+            round(((old_price - current_price) / old_price) * 100)
+        )
+
+    if current_price <= 0:
+        return None, old_price, discount_value
+
+    return float(current_price), old_price, discount_value
+
+
+def _verify_product_detail_price(
+    product: dict[str, Any],
+) -> dict[str, Any]:
+    """Verifica il prezzo sulla pagina del singolo prodotto."""
+    verified = dict(product)
+
+    asin = str(verified.get("asin") or "").strip().upper()
+    if len(asin) != 10:
+        return verified
+
+    detail_url = str(verified.get("detail_page_url") or "").strip()
+    if not detail_url:
+        detail_url = f"https://www.amazon.it/dp/{asin}?th=1"
+
+    html_text = _get_amazon_html_cached(detail_url)
+    if not html_text:
+        return verified
+
+    final_price, old_price, discount_value = _extract_detail_page_prices(
+        html_text
+    )
+
+    if final_price is None or final_price <= 0:
+        return verified
+
+    verified["prezzo_finale"] = float(final_price)
+    verified["prezzo_iniziale"] = (
+        float(old_price)
+        if old_price is not None and old_price > final_price
+        else float(final_price)
+    )
+    verified["prezzo_verificato"] = True
+    verified["sconto_val"] = int(discount_value)
+    verified["sconto"] = (
+        f"-{discount_value}%"
+        if discount_value > 0
+        else ""
+    )
+    verified["source"] = "amazon_html_detail_verified"
+
+    # La pagina dettaglio può esporre anche il social proof mensile.
+    soup = BeautifulSoup(html_text, "html.parser")
+    sold_qty, sold_label = _extract_monthly_bought(soup)
+    if sold_qty is not None:
+        verified["sold_qty_month"] = sold_qty
+        verified["sold_qty_label"] = sold_label
+
+    return verified
+
+
+def _verify_products_detail_prices(
+    products: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Verifica più schede in parallelo conservando l'ordine originale."""
+    if not products:
+        return []
+
+    results: list[Optional[dict[str, Any]]] = [None] * len(products)
+
+    workers = max(1, min(DETAIL_PRICE_WORKERS, len(products)))
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(_verify_product_detail_price, product): index
+            for index, product in enumerate(products)
+        }
+
+        for future in as_completed(future_map):
+            index = future_map[future]
+            try:
+                results[index] = future.result()
+            except Exception:
+                results[index] = dict(products[index])
+
+    return [
+        result if result is not None else dict(products[index])
+        for index, result in enumerate(results)
+    ]
+
 def _parse_html_price(text: Any) -> float:
     if text is None:
         return 0.0
@@ -783,19 +1031,30 @@ def _extract_products_from_html(
     for item in items:
         asin = str(item.get("data-asin") or "").strip().upper()
 
-        if len(asin) != 10:
-            link_with_asin = item.select_one(
-                "a[href*='/dp/'], a[href*='/gp/product/']"
-            )
-            if link_with_asin:
-                match = RE_ASIN.search(
-                    str(link_with_asin.get("href") or "")
-                )
-                if match:
-                    asin = match.group(1).upper()
+        link_with_asin = (
+            item.select_one("h2 a[href*='/dp/']")
+            or item.select_one("a.a-link-normal.s-no-outline[href*='/dp/']")
+            or item.select_one("a[href*='/dp/']")
+            or item.select_one("a[href*='/gp/product/']")
+        )
+        raw_detail_href = (
+            str(link_with_asin.get("href") or "")
+            if link_with_asin
+            else ""
+        )
+
+        if len(asin) != 10 and raw_detail_href:
+            match = RE_ASIN.search(raw_detail_href)
+            if match:
+                asin = match.group(1).upper()
 
         if len(asin) != 10 or asin in seen_asins:
             continue
+
+        detail_page_url = _normalize_product_detail_url(
+            raw_detail_href,
+            asin,
+        )
 
         title = ""
         title_element = (
@@ -919,12 +1178,13 @@ def _extract_products_from_html(
             "sold_qty_label": sold_qty_label,
             "sales_rank": None,
             "sales_rank_category": "",
+            "detail_page_url": detail_page_url,
             "link_affiliato": _affiliate_detail_url(
-                f"https://www.amazon.it/dp/{asin}",
+                detail_page_url,
                 asin,
                 partner_tag,
             ),
-            "source": "amazon_html",
+            "source": "amazon_html_search",
         }
 
         seen_asins.add(asin)
@@ -1017,6 +1277,14 @@ def _search_html_fallback(
             page,
             len(page_products),
         )
+
+        # Verifica finale del prezzo sulla pagina prodotto.
+        # Limitiamo la verifica ai prodotti utili per raggiungere il target.
+        remaining = max(0, target - len(collected))
+        if remaining > 0 and page_products:
+            page_products = _verify_products_detail_prices(
+                list(page_products[:remaining])
+            )
 
         for product in page_products:
             asin = str(product.get("asin") or "").strip().upper()
