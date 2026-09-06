@@ -25,6 +25,7 @@ except ImportError:
 
 
 MARKETPLACE = "www.amazon.it"
+HAUL_STORE_URL = "https://www.amazon.it/haul/store"
 CREATORS_API_BASE = "https://creatorsapi.amazon/catalog/v1"
 DEFAULT_EU_TOKEN_URL = "https://api.amazon.co.uk/auth/o2/token"
 TOKEN_SCOPE = "creatorsapi::default"
@@ -160,6 +161,16 @@ def is_associate_not_eligible(status: Optional[dict[str, Any]] = None) -> bool:
     message = str(current.get("message") or "").strip().lower()
     return code == 403 and "associatenoteligible" in message.replace(" ", "")
 
+
+
+def build_amazon_haul_link(
+    partner_tag: Optional[str] = None,
+) -> str:
+    """Link alla vetrina Amazon Haul con Partner Tag configurato."""
+    tag = str(partner_tag or get_partner_tag()).strip()
+    if not tag:
+        return HAUL_STORE_URL
+    return f"{HAUL_STORE_URL}?{urlencode({'tag': tag})}"
 
 def build_amazon_search_link(
     keyword: str,
@@ -2004,3 +2015,260 @@ def ottieni_vetrina_casuale(
             return list(products[:target])
 
     return []
+
+def _haul_candidate_from_node(
+    node: Any,
+    partner_tag: str,
+    asin_hint: str = "",
+) -> Optional[dict[str, Any]]:
+    """Converte un nodo HTML Haul in una scheda prodotto quando possibile."""
+    if node is None:
+        return None
+
+    asin = str(asin_hint or node.get("data-asin") or "").strip().upper()
+
+    link = (
+        node.select_one("a[href*='/dp/']")
+        or node.select_one("a[href*='/gp/product/']")
+    )
+    href = str(link.get("href") or "").strip() if link else ""
+
+    if len(asin) != 10 and href:
+        match = RE_ASIN.search(href)
+        if match:
+            asin = match.group(1).upper()
+
+    if len(asin) != 10:
+        return None
+
+    detail_page_url = _normalize_product_detail_url(href, asin)
+
+    image = node.select_one(
+        "img.s-image, img[data-a-dynamic-image], img[srcset], img[data-src], img"
+    )
+    image_url = _best_serp_image_url(image)
+
+    title = ""
+    title_candidates = (
+        node.select_one("h2 a span")
+        or node.select_one("h2 span")
+        or node.select_one("h3")
+        or node.select_one("[data-cy='title-recipe']")
+        or node.select_one(".a-size-base-plus")
+        or node.select_one(".a-size-base.a-color-base")
+    )
+
+    if title_candidates is not None:
+        title = title_candidates.get_text(" ", strip=True)
+
+    if not title and link is not None:
+        title = str(link.get("aria-label") or "").strip()
+        if not title:
+            title = link.get_text(" ", strip=True)
+
+    if not title and image is not None:
+        title = str(image.get("alt") or "").strip()
+
+    title = " ".join(title.split())
+    if len(title) < 3:
+        return None
+
+    price, old_price, discount_value = _extract_serp_prices(node)
+    price = float(price or 0.0)
+
+    sold_qty_month, sold_qty_label = _extract_monthly_bought(node)
+
+    return {
+        "asin": asin,
+        "titolo": title,
+        "immagine_url": image_url,
+        "prezzo_iniziale": old_price,
+        "prezzo_finale": price if price > 0 else None,
+        # Sulla pagina HAUL il prezzo viene letto direttamente dalla card
+        # ufficiale HAUL, quindi può essere mostrato come prezzo corrente
+        # della pagina; resta comunque soggetto a variazioni Amazon.
+        "prezzo_verificato": price > 0,
+        "_serp_price_confidence": "haul_store_card" if price > 0 else "missing",
+        "sconto": f"-{discount_value}%" if discount_value > 0 else "",
+        "sconto_val": discount_value,
+        "saving_basis_label": "",
+        "is_prime_exclusive": False,
+        "is_prime": False,
+        "prime_filter_match": False,
+        "tipo_offerta": "Amazon Haul",
+        "sold_qty_month": sold_qty_month,
+        "sold_qty_label": sold_qty_label,
+        "sales_rank": None,
+        "sales_rank_category": "",
+        "detail_page_url": detail_page_url,
+        "link_affiliato": _affiliate_detail_url(
+            detail_page_url,
+            asin,
+            partner_tag,
+        ),
+        "source": "amazon_haul_store",
+    }
+
+
+def _extract_haul_products_from_html(
+    html_text: str,
+    partner_tag: str,
+) -> list[dict[str, Any]]:
+    """Estrae prodotti dalla pagina Amazon Haul con più strategie."""
+    if not html_text:
+        return []
+
+    products: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    # Prima strategia: parser Amazon già usato per SERP.
+    for product in _extract_products_from_html(
+        html_text,
+        partner_tag=partner_tag,
+    ):
+        asin = str(product.get("asin") or "").strip().upper()
+        if len(asin) != 10 or asin in seen:
+            continue
+        product["source"] = "amazon_haul_store"
+        # Il prezzo arriva direttamente dalla pagina HAUL.
+        if product.get("prezzo_finale") is not None:
+            product["prezzo_verificato"] = True
+        product["tipo_offerta"] = "Amazon Haul"
+        seen.add(asin)
+        products.append(product)
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    # Seconda strategia: tutti i nodi con ASIN, anche se il markup HAUL
+    # non usa s-search-result.
+    for node in soup.select("[data-asin]"):
+        asin = str(node.get("data-asin") or "").strip().upper()
+        if len(asin) != 10 or asin in seen:
+            continue
+
+        product = _haul_candidate_from_node(
+            node,
+            partner_tag=partner_tag,
+            asin_hint=asin,
+        )
+        if not product:
+            continue
+
+        seen.add(asin)
+        products.append(product)
+
+    # Terza strategia: anchor /dp/ non racchiuse in un data-asin.
+    for link in soup.select("a[href*='/dp/'], a[href*='/gp/product/']"):
+        href = str(link.get("href") or "").strip()
+        match = RE_ASIN.search(href)
+        if not match:
+            continue
+
+        asin = match.group(1).upper()
+        if asin in seen:
+            continue
+
+        container = link
+        best_node = None
+
+        # Risali pochi livelli finché trovi un contenitore che abbia almeno
+        # un'immagine o abbastanza testo da sembrare una card prodotto.
+        for _ in range(6):
+            if container is None:
+                break
+            text = container.get_text(" ", strip=True)
+            if (
+                container.select_one("img") is not None
+                and len(text) >= 8
+            ):
+                best_node = container
+            container = container.parent
+
+        product = _haul_candidate_from_node(
+            best_node or link,
+            partner_tag=partner_tag,
+            asin_hint=asin,
+        )
+        if not product:
+            continue
+
+        seen.add(asin)
+        products.append(product)
+
+    return products
+
+
+@st.cache_data(ttl=3 * 60, show_spinner=False, max_entries=96)
+def ottieni_haul_casuale(
+    partner_tag: Optional[str] = None,
+    item_count: int = 10,
+    refresh_token: Optional[str] = None,
+    exclude_asins: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Restituisce fino a 10 prodotti casuali reali dalla pagina Amazon Haul.
+
+    Il refresh_token modifica il campionamento senza dover riscaricare
+    necessariamente la stessa pagina HTML.
+    """
+    configured_tag = get_partner_tag() or str(partner_tag or "").strip()
+    if not configured_tag:
+        return []
+
+    target = max(1, min(int(item_count or 10), 10))
+    html_text = _get_amazon_html_cached(HAUL_STORE_URL)
+
+    if not html_text:
+        return []
+
+    pool = _extract_haul_products_from_html(
+        html_text,
+        partner_tag=configured_tag,
+    )
+
+    if not pool:
+        return []
+
+    token = str(refresh_token or time.time_ns())
+    digest = hashlib.sha256(token.encode("utf-8")).digest()
+    seed = int.from_bytes(digest[:8], "big")
+    rng = random.Random(seed)
+
+    excluded = {
+        str(asin).strip().upper()
+        for asin in exclude_asins
+        if str(asin).strip()
+    }
+
+    fresh = [
+        product for product in pool
+        if str(product.get("asin") or "").strip().upper() not in excluded
+    ]
+    previous = [
+        product for product in pool
+        if str(product.get("asin") or "").strip().upper() in excluded
+    ]
+
+    rng.shuffle(fresh)
+    rng.shuffle(previous)
+
+    selected = fresh[:target]
+
+    # Se il pool non contiene 10 prodotti completamente nuovi, completa
+    # con elementi del set precedente senza creare duplicati.
+    if len(selected) < target:
+        selected.extend(previous[: target - len(selected)])
+
+    # Ultima rete di sicurezza se exclude_asins contiene ASIN non più presenti.
+    if len(selected) < target:
+        used = {
+            str(product.get("asin") or "").strip().upper()
+            for product in selected
+        }
+        remaining = [
+            product for product in pool
+            if str(product.get("asin") or "").strip().upper() not in used
+        ]
+        rng.shuffle(remaining)
+        selected.extend(remaining[: target - len(selected)])
+
+    return selected[:target]

@@ -25,7 +25,7 @@ LOGGER = logging.getLogger("amazon_affiliate_app")
 MAX_RESULTS = amazon_api.MAX_RESULTS
 SORT_MAPPINGS = amazon_api.SORT_MAPPINGS
 
-st.session_state.setdefault("current_tab", "vetrina")
+st.session_state.setdefault("current_tab", "haul")
 st.session_state.setdefault("has_searched", False)
 st.session_state.setdefault("item_count", 10)
 st.session_state.setdefault("current_page", 1)
@@ -43,12 +43,16 @@ st.session_state.setdefault("search_sort", "Prezzo minimo")
 st.session_state.setdefault("search_keyword_input", "")
 st.session_state.setdefault("search_prime_only", False)
 st.session_state.setdefault("scroll_to_current_results_page", False)
+st.session_state.setdefault("offerte_haul", [])
+st.session_state.setdefault("haul_refresh_token", str(time.time_ns()))
+st.session_state.setdefault("haul_loaded_token", None)
+st.session_state.setdefault("haul_previous_asins", [])
 st.session_state.setdefault("no_more_results", False)
 
 # La scheda Contatti resta nel codice ma non è visibile/raggiungibile
 # dalla navigazione pubblica.
 if st.session_state.get("current_tab") == "contatti":
-    st.session_state["current_tab"] = "vetrina"
+    st.session_state["current_tab"] = "haul"
 
 try:
     if str(st.query_params.get("privacy", "")) == "1":
@@ -150,6 +154,57 @@ html {
 
 .brand-author strong {
     color: #0369a1;
+}
+
+/* NAV HAUL / VETRINA / CERCA */
+div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    align-items: stretch !important;
+    gap: 5px !important;
+    width: 100% !important;
+}
+
+div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) > div,
+div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) div[data-testid="column"],
+div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) div[data-testid="stColumn"] {
+    flex: 1 1 0 !important;
+    width: 33.333% !important;
+    min-width: 0 !important;
+    max-width: 33.333% !important;
+    padding: 0 !important;
+}
+
+div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) button {
+    width: 100% !important;
+    min-width: 0 !important;
+    white-space: nowrap !important;
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+    font-size: .76rem !important;
+}
+
+@media (max-width: 580px) {
+    div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) {
+        gap: 3px !important;
+        flex-wrap: nowrap !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) > div,
+    div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) div[data-testid="column"],
+    div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) div[data-testid="stColumn"] {
+        flex: 1 1 0 !important;
+        width: 33.333% !important;
+        min-width: 0 !important;
+        max-width: 33.333% !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) button {
+        font-size: .66rem !important;
+        padding: 3px 2px !important;
+        min-height: 34px !important;
+    }
 }
 
 /* NAV VETRINA / CERCA */
@@ -626,6 +681,14 @@ def set_tab(tab_name: str) -> None:
     st.session_state["current_tab"] = tab_name
     _clear_query_params()
 
+
+
+def open_haul() -> None:
+    """Apre HAUL e genera un nuovo campionamento casuale."""
+    st.session_state["current_tab"] = "haul"
+    st.session_state["haul_refresh_token"] = str(time.time_ns())
+    st.session_state["haul_loaded_token"] = None
+    _clear_query_params()
 
 def open_vetrina() -> None:
     """Apre la vetrina e forza una nuova SearchItems."""
@@ -1129,13 +1192,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-active_tab = st.session_state.get("current_tab", "vetrina")
+active_tab = st.session_state.get("current_tab", "haul")
 
-# NAV PUBBLICA: Contatti volutamente nascosta.
+# NAV PUBBLICA: HAUL / Vetrina / Cerca. Contatti resta nascosta.
 st.markdown("<div class='nav-wrap'>", unsafe_allow_html=True)
-nav1, nav2 = st.columns(2)
+nav1, nav2, nav3 = st.columns([1, 1, 1], gap="small")
 
 with nav1:
+    st.button(
+        "🛍️ HAUL",
+        key="nav_btn_haul",
+        type="primary" if active_tab == "haul" else "secondary",
+        on_click=open_haul,
+        use_container_width=True,
+    )
+
+with nav2:
     st.button(
         "🔥 Vetrina",
         key="nav_btn_vetrina",
@@ -1144,7 +1216,7 @@ with nav1:
         use_container_width=True,
     )
 
-with nav2:
+with nav3:
     st.button(
         "🔍 Cerca",
         key="nav_btn_cerca",
@@ -1164,10 +1236,87 @@ if not partner_tag:
         "Creators API nei Secrets di Streamlit."
     )
 
-active_tab = st.session_state.get("current_tab", "vetrina")
+active_tab = st.session_state.get("current_tab", "haul")
 st.markdown("<div class='tab-content-panel'>", unsafe_allow_html=True)
 
-if active_tab == "vetrina":
+if active_tab == "haul":
+    haul_url = amazon_api.build_amazon_haul_link()
+
+    st.markdown(
+        """
+        <h2 style='font-size:1.02rem;font-weight:900;color:#0369a1;
+        margin:2px 0 5px 2px;'>🛍️ Amazon HAUL</h2>
+
+        <div style='background:linear-gradient(135deg,#fff7ed,#fffbeb);
+        border:1px solid #fdba74;border-radius:10px;padding:9px 10px;
+        margin:0 0 8px 0;color:#7c2d12;font-size:.72rem;line-height:1.45;'>
+        <strong>Risparmi Amazon Haul:</strong>
+        con <strong>3 articoli</strong> la consegna è gratuita;
+        con <strong>4 articoli</strong> ottieni il <strong>5% di sconto</strong>;
+        con <strong>5 o più articoli</strong> ottieni il <strong>10% di sconto</strong>.
+        <br>
+        <span style='font-size:.64rem;color:#9a3412;'>
+        Le condizioni promozionali possono cambiare nel tempo: verifica sempre
+        i dettagli aggiornati direttamente su Amazon Haul.
+        </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.link_button(
+        "🛍️ Apri Amazon HAUL",
+        haul_url,
+        use_container_width=True,
+    )
+
+    current_token = str(st.session_state["haul_refresh_token"])
+
+    if (
+        st.session_state.get("haul_loaded_token") != current_token
+        and partner_tag
+    ):
+        previous_asins = tuple(
+            str(asin).strip().upper()
+            for asin in st.session_state.get("haul_previous_asins", [])
+            if str(asin).strip()
+        )
+
+        with st.spinner("Selezione casuale prodotti HAUL..."):
+            haul_products = amazon_api.ottieni_haul_casuale(
+                item_count=10,
+                refresh_token=current_token,
+                exclude_asins=previous_asins,
+            )
+
+        new_haul = list(haul_products or [])
+        if new_haul:
+            st.session_state["offerte_haul"] = new_haul
+            st.session_state["haul_previous_asins"] = [
+                str(product.get("asin") or "").strip().upper()
+                for product in new_haul
+                if str(product.get("asin") or "").strip()
+            ]
+
+        # Se Amazon blocca temporaneamente il fetch, conserva la selezione
+        # valida precedente anziché mostrare una pagina vuota.
+        st.session_state["haul_loaded_token"] = current_token
+
+    haul_products = st.session_state.get("offerte_haul", [])
+
+    if haul_products:
+        st.caption(
+            f"{len(haul_products)} prodotti selezionati casualmente dalla pagina HAUL."
+        )
+        for index, product in enumerate(haul_products):
+            render_product_card(product, eager_image=(index == 0))
+    else:
+        st.info(
+            "Amazon HAUL non ha restituito prodotti leggibili in questo momento. "
+            "Premi di nuovo HAUL o ricarica la pagina."
+        )
+
+elif active_tab == "vetrina":
     st.markdown(
         """
         <h2 style='font-size:.94rem;font-weight:900;color:#0369a1;

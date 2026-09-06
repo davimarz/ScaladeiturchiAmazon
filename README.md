@@ -91,3 +91,46 @@ Il messaggio:
 
 è stato sostituito con:
 `Il prezzo può cambiare frequentemente: verifica quello aggiornato direttamente dal link Amazon.`
+
+
+## V19 - pagina Amazon HAUL
+
+- nuova prima scheda di navigazione: `HAUL`;
+- ordine navigazione: `HAUL -> Vetrina -> Cerca`;
+- tre pulsanti forzati su una sola riga anche su smartphone;
+- lettura prodotti da `https://www.amazon.it/haul/store`;
+- fino a 10 prodotti casuali reali per apertura/refresh;
+- il set precedente viene escluso quando il pool HAUL contiene abbastanza
+  prodotti differenti;
+- se Amazon blocca temporaneamente il fetch, viene mantenuta la selezione
+  HAUL valida precedente della sessione;
+- immagini ad alta risoluzione e layout mobile V17/V18 mantenuti.
+
+### Condizioni Haul riportate in UI
+Sono state usate le condizioni pubblicate ufficialmente da Amazon:
+- consegna gratuita da 15 EUR;
+- 5% sugli ordini oltre 30 EUR;
+- 10% sugli ordini oltre 50 EUR.
+
+Le soglie non vengono presentate come legate al numero di articoli, perché
+la documentazione Amazon verificata le esprime in valore dell'ordine.
+
+
+## V20 - correzione consegna gratuita Amazon Haul
+
+Aggiornata la descrizione HAUL:
+- 3 o più articoli: consegna gratuita;
+- le percentuali 5% / 10% restano indicate come condizioni promozionali da
+  verificare direttamente su Amazon finché non vengono confermate con evidenza
+  specifica per 4 e 5 articoli.
+
+
+## V21 - regole complete Amazon Haul
+
+Aggiornata la descrizione promozionale della pagina HAUL:
+- 3 articoli: consegna gratuita;
+- 4 articoli: 5% di sconto;
+- 5 o più articoli: 10% di sconto.
+
+Resta visibile una nota che invita a verificare le condizioni aggiornate
+direttamente su Amazon Haul, perché le promozioni possono cambiare.
