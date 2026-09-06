@@ -289,3 +289,11 @@ Usare il file separato `streamlit_secrets_new.toml` esclusivamente in:
 Streamlit Cloud -> Manage app -> Settings -> Secrets.
 
 Non caricare `streamlit_secrets_new.toml` nel repository GitHub pubblico.
+
+
+## Revisione - paginazione, filtri e acquisti mensili
+
+- Il caricamento incrementale può proseguire fino al limite di 10 pagine API, fermandosi al raggiungimento del numero richiesto. GetItems non viene richiamato per gli ASIN già caricati.
+- Il fallback HTML applica nuovamente i limiti di prezzo dopo la verifica dettaglio. Con filtro Prime attivo esclude i prodotti senza conferma Prime, inclusi quelli scoperti tramite indici esterni. I risultati possono quindi essere meno del numero richiesto.
+- Gli acquisti mensili recuperati dal dettaglio vengono conservati anche quando il prezzo non è disponibile.
+- Verifica: sintassi Python e controlli di regressione con risposte simulate; nessuna chiamata Amazon reale o verifica completa dell'interfaccia.

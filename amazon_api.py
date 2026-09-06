@@ -1370,6 +1370,11 @@ def _verify_product_detail_price(
             if url and url != detail_image
         ))
 
+    # Questi metadati restano validi anche quando il prezzo non è leggibile.
+    if sold_qty is not None:
+        verified["sold_qty_month"] = sold_qty
+        verified["sold_qty_label"] = sold_label
+
     if final_price is None or final_price <= 0:
         verified["_search_prezzo_finale"] = verified.get("prezzo_finale")
         verified["_search_prezzo_iniziale"] = verified.get("prezzo_iniziale")
@@ -1390,10 +1395,6 @@ def _verify_product_detail_price(
     verified["sconto_val"] = int(discount_value)
     verified["sconto"] = f"-{discount_value}%" if discount_value > 0 else ""
     verified["source"] = "amazon_html_detail_verified"
-
-    if sold_qty is not None:
-        verified["sold_qty_month"] = sold_qty
-        verified["sold_qty_label"] = sold_label
 
     return verified
 
@@ -2803,6 +2804,14 @@ def _search_html_fallback(
 
     if collected:
         collected = _verify_products_detail_prices(collected)
+        # I prezzi definitivi possono differire dalla SERP. Anche i prodotti
+        # scoperti esternamente devono rispettare tutti i filtri richiesti.
+        # Senza conferma Prime, un risultato non soddisfa il filtro Prime.
+        collected = [
+            product for product in collected
+            if (not require_prime or product.get("is_prime") is True)
+            and _passes_local_filters(product, min_price, max_price)
+        ]
 
     if collected:
         diagnostic_reason = "ok"
@@ -3006,10 +3015,9 @@ def ottieni_offerte_avanzate(
     else:
         api_candidate_target = target
 
-    api_pages = min(
-        MAX_SEARCH_PAGES,
-        max(1, math.ceil(api_candidate_target / 10) + 2),
-    )
+    # Continua oltre le pagine già caricate, fino al target o al limite API.
+    # Gli ASIN esclusi possono occupare intere pagine della ricerca.
+    api_pages = MAX_SEARCH_PAGES
 
     for page in range(1, api_pages + 1):
         search_items = _search_page_cached(
@@ -3032,7 +3040,10 @@ def ottieni_offerte_avanzate(
             str(item.get("asin") or "").strip().upper()
             for item in search_items
             if len(str(item.get("asin") or "").strip()) == 10
+            and str(item.get("asin") or "").strip().upper() not in seen_asins
         )
+        if not asins:
+            continue
 
         exact_items = _get_items_cached(asins, partner_tag)
         by_asin = {
