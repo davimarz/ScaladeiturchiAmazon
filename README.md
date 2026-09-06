@@ -50,3 +50,12 @@ La logica V14/V13 sulla pagina dettaglio resta però prioritaria:
   mostrato come prezzo certo.
 
 Questa combinazione è più robusta del solo fix SERP.
+
+
+## V16 - Circuit breaker 403 a 60 minuti
+
+Quando Creators API risponde `403 AssociateNotEligible`, il backend:
+- passa subito al fallback HTML;
+- non ripete chiamate Creators API per 60 minuti;
+- dopo 60 minuti prova automaticamente di nuovo;
+- appena una chiamata API torna a rispondere 200, il blocco viene azzerato.

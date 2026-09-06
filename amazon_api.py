@@ -37,7 +37,7 @@ HTML_TIMEOUT = 8
 HTML_CACHE_TTL = 180
 DETAIL_SNAPSHOT_TTL = 75
 DETAIL_PRICE_WORKERS = 4
-CREATORS_403_COOLDOWN = 15 * 60
+CREATORS_403_COOLDOWN = 60 * 60
 SEARCH_HTML_CACHE_MAX = 24
 DETAIL_SNAPSHOT_CACHE_MAX = 256
 
@@ -281,7 +281,7 @@ def get_creators_access_token(force_refresh: bool = False) -> Optional[str]:
 
 def _api_post(operation: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
     # Dopo AssociateNotEligible evitiamo di ripetere una richiesta che Amazon
-    # rifiuterebbe comunque. Ogni 15 minuti il backend riprova automaticamente.
+    # rifiuterebbe comunque. Ogni 60 minuti il backend riprova automaticamente.
     if _creators_temporarily_blocked():
         return None
 
