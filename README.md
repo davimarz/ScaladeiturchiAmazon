@@ -330,3 +330,12 @@ Questa sezione sostituisce le precedenti indicazioni sulla disattivazione del we
 - Vetrina e HAUL non memorizzano i fallimenti come risultati vuoti nella cache; un nuovo click permette di riprovare. Restano la vetrina condivisa e le cache delle risposte valide.
 - Il budget di 800 richieste riguarda solo Creators API. Il web usa le cache, i timeout e i circuit breaker già presenti, ma non garantisce accessibilità: Amazon può bloccare anche queste richieste dal server di hosting. Nessun prodotto o prezzo viene inventato quando tutte le fonti falliscono.
 - Installare anche curl_cffi da requirements.txt. Nessuna nuova credenziale richiesta.
+
+
+## Limite ricerche e testi cliente
+
+- `searches_per_session = 10` nei Secrets limita Cerca e Carica altri 10 nella singola sessione Streamlit. Ogni tentativo ammesso conta, anche se non trova prodotti o incontra un errore; click respinti durante la pausa di 5 secondi non contano.
+- Ordinamento, paginazione locale e link Amazon non consumano ricerche. Vetrina e HAUL non consumano questo contatore; restano soggetti alle rispettive cache e al budget API globale.
+- Al limite i pulsanti di ricerca/caricamento sono disabilitati, i risultati restano consultabili e compare un messaggio breve con il pulsante Amazon. Il collegamento usa il termine attualmente inserito.
+- Il limite è per sessione, NON identifica un cliente: nuove sessioni o riconnessioni che perdono lo stato possono azzerarlo. Per un limite per persona persistente occorrono autenticazione e contatore associato all'account. Il budget API globale rimane la protezione comune.
+- Rimossi i dettagli pubblici su cache, parser e fonti tecniche dei prezzi; le informazioni diagnostiche restano nei log del server.

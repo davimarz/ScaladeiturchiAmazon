@@ -778,12 +778,33 @@ def _on_search_sort_change() -> None:
         st.session_state["current_page"] = 1
 
 
+SEARCH_LIMIT_NOTICE = (
+    "Hai raggiunto il limite di ricerche per questa sessione. "
+    "Puoi continuare a cercare direttamente su Amazon."
+)
+
+
+def _session_search_limit() -> int:
+    try:
+        return max(1, int(st.secrets.get("amazon_api", {}).get("searches_per_session", 10)))
+    except Exception:
+        return 10
+
+
+def _session_limit_reached() -> bool:
+    return int(st.session_state.get("searches_used", 0)) >= _session_search_limit()
+
+
 def _search_allowed() -> bool:
+    if _session_limit_reached():
+        st.session_state["search_notice"] = SEARCH_LIMIT_NOTICE
+        return False
     now = time.monotonic()
     if now < st.session_state.get("next_search_at", 0):
-        st.session_state["search_notice"] = "Attendi qualche secondo prima di riprovare."
+        st.session_state["search_notice"] = "Attendi un momento prima della prossima ricerca."
         return False
     st.session_state["next_search_at"] = now + 5
+    st.session_state["searches_used"] = int(st.session_state.get("searches_used", 0)) + 1
     return True
 
 
@@ -831,34 +852,11 @@ def _perform_search(target_count: int) -> None:
     st.session_state["no_more_results"] = False
 
     if not results:
-        diagnostics = amazon_api.get_search_diagnostics()
-        reason = str(diagnostics.get("reason") or "")
-
-        if reason in {
-            "fetch_failed_or_blocked",
-            "html_without_product_signals",
-        }:
-            ext_ok = int(diagnostics.get("external_sources_ok") or 0)
-            if ext_ok == 0:
-                st.session_state["search_notice"] = (
-                    "La ricerca prodotti è temporaneamente non raggiungibile dal server. "
-                    "Riprova tra qualche minuto."
-                )
-            else:
-                st.session_state["search_notice"] = (
-                    "Amazon non sta restituendo risultati utilizzabili in questo momento. "
-                    "Riprova tra qualche minuto."
-                )
-        elif reason == "product_markup_not_parsed":
-            st.session_state["search_notice"] = (
-                "Amazon ha restituito la pagina, ma i prodotti non sono leggibili "
-                "in questo momento. Riprova tra poco."
-            )
-        else:
-            st.session_state["search_notice"] = (
-                "Nessun prodotto disponibile per questa ricerca in questo momento. "
-                "Puoi riprovare oppure usare una parola chiave più generale."
-            )
+        LOGGER.info("Ricerca senza risultati: %s", amazon_api.get_search_diagnostics())
+        st.session_state["search_notice"] = (
+            "Non abbiamo trovato prodotti per questa ricerca. "
+            "Prova un altro termine oppure continua su Amazon."
+        )
     elif len(results) < target_count:
         st.session_state["search_notice"] = (
             f"Ho trovato {len(results)} prodotti per questa ricerca. "
@@ -868,8 +866,6 @@ def _perform_search(target_count: int) -> None:
         st.session_state["search_notice"] = ""
 
 def _load_more() -> None:
-    if not _search_allowed():
-        return
     existing = list(st.session_state.get("offerte", []))
     previous_count = len(existing)
 
@@ -879,6 +875,8 @@ def _load_more() -> None:
         )
         return
 
+    if not _search_allowed():
+        return
     add_count = min(10, MAX_RESULTS - previous_count)
     cfg = st.session_state["last_search"]
     excluded_asins = tuple(
@@ -1114,15 +1112,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
 
     badges_html = "".join(badge_parts)
 
-    source = str(product.get("source") or "")
-    if source == "amazon_html_detail_verified":
-        note = "Prezzo verificato nel blocco principale della pagina prodotto Amazon."
-    elif source == "amazon_html_detail_unverified":
-        note = "Il prezzo può cambiare frequentemente: verifica quello aggiornato direttamente dal link Amazon."
-    elif source.startswith("amazon_html"):
-        note = "Prezzo in attesa di verifica sulla pagina prodotto."
-    else:
-        note = "Prezzo verificato tramite i dati Amazon disponibili."
+    note = "Prezzi e disponibilità possono cambiare: verifica su Amazon."
 
     saving_basis_label = str(product.get("saving_basis_label") or "").strip()
 
@@ -1434,7 +1424,7 @@ elif active_tab == "vetrina":
         <h2 style='font-size:.94rem;font-weight:900;color:#0369a1;
         margin:2px 0 2px 2px;'>🔥 Offerte in Vetrina</h2>
         <p style='font-size:.70rem;color:#64748b;margin:0 0 7px 2px;'>
-        La selezione è condivisa e viene aggiornata ogni 30 minuti alla prima visita.
+        Una selezione di prodotti da scoprire su Amazon.
         </p>
         """,
         unsafe_allow_html=True,
@@ -1508,6 +1498,7 @@ elif active_tab == "cerca":
         submitted = st.button(
             "🔍 Cerca",
             key="search_submit_button",
+            disabled=_session_limit_reached(),
             type="primary",
             use_container_width=True,
         )
@@ -1520,15 +1511,8 @@ elif active_tab == "cerca":
         on_change=_on_search_sort_change,
     )
 
-    if st.session_state.get("search_sort") == "Quantità vendite":
-        st.caption(
-            "Il cambio è immediato su tutte le schede già caricate. "
-            "Priorità a “X+ acquistati nel mese scorso” quando Amazon lo mostra; "
-            "poi Best Sellers Rank e ordine Amazon."
-        )
-
     st.checkbox(
-        "🚚 Solo risultati compatibili con il filtro Prime di Amazon",
+        "🚚 Solo prodotti Prime",
         key="search_prime_only",
     )
 
@@ -1549,7 +1533,9 @@ elif active_tab == "cerca":
         st.session_state["no_more_results"] = False
         _perform_search(10)
 
-    if st.session_state.get("search_notice"):
+    if _session_limit_reached():
+        st.info(SEARCH_LIMIT_NOTICE)
+    elif st.session_state.get("search_notice"):
         st.info(st.session_state["search_notice"])
 
     st.link_button(
@@ -1617,6 +1603,7 @@ elif active_tab == "cerca":
             use_container_width=True,
             disabled=(
                 len(results) >= MAX_RESULTS
+                or _session_limit_reached()
                 or bool(st.session_state.get("no_more_results", False))
             ),
         )
