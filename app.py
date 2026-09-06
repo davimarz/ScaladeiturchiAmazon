@@ -1395,7 +1395,7 @@ if active_tab == "haul":
         )
 
         with st.spinner("Selezione casuale prodotti HAUL..."):
-            haul_products = amazon_api.ottieni_haul_casuale(
+            haul_products = _amazon_request(amazon_api.ottieni_haul_casuale,
                 item_count=10,
                 refresh_token=current_token,
                 exclude_asins=previous_asins,
@@ -1424,7 +1424,8 @@ if active_tab == "haul":
             render_product_card(product, eager_image=(index == 0))
     else:
         st.info(
-            "Apri Amazon HAUL per consultare prodotti, prezzi e disponibilità aggiornati."
+            "Non è stato possibile leggere i prodotti HAUL in questo momento. "
+            "Premi di nuovo HAUL per riprovare oppure apri la vetrina Amazon."
         )
 
 elif active_tab == "vetrina":

@@ -306,7 +306,9 @@ def get_request_usage() -> dict[str, Any]:
 
 
 def html_fallback_enabled() -> bool:
-    return _amazon_secrets().get("enable_html_fallback", False) is True
+    # La nuova modalità sostituisce il vecchio flag, che nella versione
+    # precedente disabilitava involontariamente tutte le alternative web.
+    return str(_amazon_secrets().get("data_source_mode", "hybrid")).lower() != "api_only"
 
 
 def get_partner_tag() -> str:
@@ -3049,16 +3051,22 @@ def ottieni_offerte_avanzate(
     api_pages = MAX_SEARCH_PAGES
 
     for page in range(1, api_pages + 1):
-        search_items = _search_page_cached(
-            query,
-            sort_value,
-            bool(solo_spedizione_gratuita),
-            page,
-            partner_tag,
-            min_price,
-            max_price,
-            cache_buster,
-        )
+        try:
+            search_items = _search_page_cached(
+                query,
+                sort_value,
+                bool(solo_spedizione_gratuita),
+                page,
+                partner_tag,
+                min_price,
+                max_price,
+                cache_buster,
+            )
+        except api_budget.BudgetUnavailable as exc:
+            LOGGER.info("Creators ricerca non disponibile, recupero web: %s", exc)
+            if not html_fallback_enabled():
+                raise
+            break
 
         if not search_items:
             # Se SearchItems è bloccato (es. AssociateNotEligible)
@@ -3074,7 +3082,11 @@ def ottieni_offerte_avanzate(
         if not asins:
             continue
 
-        exact_items = _get_items_cached(asins, partner_tag)
+        try:
+            exact_items = _get_items_cached(asins, partner_tag)
+        except api_budget.BudgetUnavailable as exc:
+            LOGGER.info("Creators dettagli non disponibili, recupero web: %s", exc)
+            exact_items = ()
         by_asin = {
             str(item.get("asin") or "").strip().upper(): item
             for item in exact_items
@@ -3098,6 +3110,11 @@ def ottieni_offerte_avanzate(
                     search_item,
                     partner_tag,
                 )
+                if product:
+                    # SearchItems ha già applicato il filtro Prime.
+                    product["prime_filter_match"] = bool(solo_spedizione_gratuita)
+                    if html_fallback_enabled():
+                        product = _verify_product_detail_price(product)
 
             if not product:
                 continue
@@ -3282,7 +3299,8 @@ def _vetrina_condivisa(
         if products:
             return list(products[:target])
 
-    return []
+    raise api_budget.BudgetUnavailable("Nessun prodotto recuperabile per la vetrina")
+
 
 def _haul_candidate_from_node(
     node: Any,
@@ -3488,7 +3506,7 @@ def ottieni_haul_casuale(
     html_text = _get_amazon_html_cached(HAUL_STORE_URL)
 
     if not html_text:
-        return []
+        raise api_budget.BudgetUnavailable("Pagina HAUL temporaneamente non leggibile")
 
     pool = _extract_haul_products_from_html(
         html_text,
@@ -3496,7 +3514,7 @@ def ottieni_haul_casuale(
     )
 
     if not pool:
-        return []
+        raise api_budget.BudgetUnavailable("Nessun prodotto leggibile nella pagina HAUL")
 
     token = str(refresh_token or time.time_ns())
     digest = hashlib.sha256(token.encode("utf-8")).digest()

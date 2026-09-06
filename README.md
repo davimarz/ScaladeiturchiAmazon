@@ -318,3 +318,15 @@ Sostituire app.py e amazon_api.py, aggiungere api_budget.py e mantenere le propr
 
 ### Verifica
 Controlli locali con risposte HTTP e Streamlit simulati; nessuna richiesta reale Amazon. Quota reale e funzionamento sul proprio hosting devono essere verificati prima della diffusione ai clienti.
+
+
+## Correzione modalità ibrida (versione corrente)
+
+Questa sezione sostituisce le precedenti indicazioni sulla disattivazione del web.
+- La modalità predefinita è `data_source_mode = "hybrid"`: API prima scelta, ricerca HTML Amazon e discovery esterno quando API fallisce o raggiunge il budget; prezzi verificati sul dettaglio Amazon.
+- Il vecchio `enable_html_fallback = false` viene ignorato per correggere la regressione anche nei Secrets già configurati. Per disattivare il web usare esplicitamente `data_source_mode = "api_only"`.
+- HAUL torna a leggere la pagina web Amazon. Non dipende dalla disponibilità Creators API.
+- Errori SearchItems, non idoneità e limite locale non interrompono più il passaggio al web. Se GetItems fallisce si conservano i metadati SearchItems e si tenta la verifica web del dettaglio.
+- Vetrina e HAUL non memorizzano i fallimenti come risultati vuoti nella cache; un nuovo click permette di riprovare. Restano la vetrina condivisa e le cache delle risposte valide.
+- Il budget di 800 richieste riguarda solo Creators API. Il web usa le cache, i timeout e i circuit breaker già presenti, ma non garantisce accessibilità: Amazon può bloccare anche queste richieste dal server di hosting. Nessun prodotto o prezzo viene inventato quando tutte le fonti falliscono.
+- Installare anche curl_cffi da requirements.txt. Nessuna nuova credenziale richiesta.
