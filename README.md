@@ -30,3 +30,23 @@ Web app Streamlit con ricerca Amazon, Vetrina, paginazione e schede prodotto.
 - `.gitignore` – esclude secrets/cache/file locali
 
 Le credenziali devono restare nei Secrets di Streamlit Cloud e non nel repository.
+
+
+## V15 - correzione prezzo SERP + verifica dettaglio
+
+È stata integrata la parte valida della proposta Base44:
+
+- il prezzo attuale SERP privilegia `data-a-color="base"`;
+- `.a-text-price` è escluso da tutti i selettori del prezzo attuale;
+- il prezzo barrato viene cercato solo in `.a-price.a-text-price`
+  o `data-a-strike="true"`;
+- `old_price` parte da `None`, non dal prezzo finale;
+- whole/fraction vengono letti solo dentro il nodo prezzo corrente.
+
+La logica V14/V13 sulla pagina dettaglio resta però prioritaria:
+- il prezzo definitivo arriva da `corePrice` / `apexPriceToPay`;
+- il prezzo SERP non è mai marcato come verificato;
+- se la pagina dettaglio non è verificabile, il prezzo SERP non viene
+  mostrato come prezzo certo.
+
+Questa combinazione è più robusta del solo fix SERP.

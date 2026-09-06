@@ -1183,6 +1183,113 @@ def _extract_html_prime(item: Any) -> bool:
     return "prime" in item.get_text(" ", strip=True).lower()
 
 
+
+def _extract_serp_prices(
+    item: Any,
+) -> tuple[Optional[float], Optional[float], int]:
+    """Estrae prezzo attuale e prezzo barrato da una scheda risultati Amazon.
+
+    Regole:
+    - il prezzo attuale non può provenire da `.a-text-price`;
+    - `data-a-color="base"` ha priorità;
+    - il prezzo barrato viene cercato solo nei nodi dedicati;
+    - se non esiste un prezzo barrato valido, old_price resta None.
+    """
+    current_price = 0.0
+
+    current_selectors = (
+        "span.a-price[data-a-color='base']:not(.a-text-price) .a-offscreen",
+        (
+            ".a-price-range "
+            "span.a-price[data-a-color='base']:not(.a-text-price) .a-offscreen"
+        ),
+        (
+            "span.a-price:not(.a-text-price)"
+            ":not([data-a-strike='true']) .a-offscreen"
+        ),
+        (
+            ".a-price-range "
+            "span.a-price:not(.a-text-price)"
+            ":not([data-a-strike='true']) .a-offscreen"
+        ),
+        "span.a-price:not(.a-text-price) .a-offscreen",
+        ".a-color-price",
+    )
+
+    for selector in current_selectors:
+        element = item.select_one(selector)
+        if element is None:
+            continue
+
+        value = _parse_html_price(element.get_text(" ", strip=True))
+        if value > 0:
+            current_price = value
+            break
+
+    # Fallback whole/fraction, ma sempre limitato al nodo prezzo NON barrato.
+    if current_price <= 0:
+        base_price = (
+            item.select_one(
+                "span.a-price[data-a-color='base']:not(.a-text-price)"
+                ":not([data-a-strike='true'])"
+            )
+            or item.select_one(
+                "span.a-price:not(.a-text-price)"
+                ":not([data-a-strike='true'])"
+            )
+        )
+
+        if base_price is not None:
+            whole = base_price.select_one(".a-price-whole")
+            fraction = base_price.select_one(".a-price-fraction")
+
+            if whole:
+                whole_text = (
+                    whole.get_text("", strip=True)
+                    .replace(".", "")
+                    .replace(",", "")
+                )
+                fraction_text = (
+                    fraction.get_text("", strip=True)
+                    if fraction
+                    else "00"
+                )
+                try:
+                    candidate = float(f"{whole_text}.{fraction_text}")
+                except ValueError:
+                    candidate = 0.0
+
+                if candidate > 0:
+                    current_price = candidate
+
+    if current_price <= 0:
+        return None, None, 0
+
+    old_price: Optional[float] = None
+
+    old_selectors = (
+        "span.a-price.a-text-price .a-offscreen",
+        "span.a-price[data-a-strike='true'] .a-offscreen",
+    )
+
+    for selector in old_selectors:
+        element = item.select_one(selector)
+        if element is None:
+            continue
+
+        candidate = _parse_html_price(element.get_text(" ", strip=True))
+        if candidate > current_price:
+            old_price = candidate
+            break
+
+    discount_value = 0
+    if old_price is not None and old_price > current_price:
+        discount_value = int(
+            round(((old_price - current_price) / old_price) * 100)
+        )
+
+    return float(current_price), old_price, discount_value
+
 def _extract_products_from_html(
     html_text: str,
     partner_tag: str,
@@ -1261,62 +1368,8 @@ def _extract_products_from_html(
             if "transparent-pixel" in image_url or "pixel" in image_url.lower():
                 image_url = ""
 
-        price = 0.0
-        price_element = (
-            item.select_one(
-                "span.a-price:not([data-a-strike='true']) .a-offscreen"
-            )
-            or item.select_one(
-                ".a-price-range span.a-price:not([data-a-strike='true']) .a-offscreen"
-            )
-            or item.select_one("span.a-price .a-offscreen")
-            or item.select_one(".a-color-price")
-        )
-        if price_element:
-            price = _parse_html_price(
-                price_element.get_text(" ", strip=True)
-            )
-
-        if price <= 0:
-            whole = item.select_one(".a-price-whole")
-            fraction = item.select_one(".a-price-fraction")
-            if whole:
-                whole_text = (
-                    whole.get_text("", strip=True)
-                    .replace(".", "")
-                    .replace(",", "")
-                )
-                fraction_text = (
-                    fraction.get_text("", strip=True)
-                    if fraction
-                    else "00"
-                )
-                try:
-                    price = float(f"{whole_text}.{fraction_text}")
-                except ValueError:
-                    price = 0.0
-
-        old_price = price if price > 0 else None
-        old_price_element = (
-            item.select_one("span.a-price[data-a-strike='true'] .a-offscreen")
-            or item.select_one("span.a-text-price .a-offscreen")
-            or item.select_one("span[data-a-strike='true']")
-        )
-        if old_price_element:
-            candidate = _parse_html_price(
-                old_price_element.get_text(" ", strip=True)
-            )
-            if candidate > price > 0:
-                old_price = candidate
-
-        discount_value = 0
-        if (
-            old_price is not None
-            and old_price > price > 0
-        ):
-            discount_value = int(
-                round(((old_price - price) / old_price) * 100)
-            )
+        price, old_price, discount_value = _extract_serp_prices(item)
+        price = float(price or 0.0)
 
         is_prime = _extract_html_prime(item)
         if require_prime and not is_prime:
@@ -1337,7 +1390,14 @@ def _extract_products_from_html(
             "immagine_url": image_url,
             "prezzo_iniziale": old_price,
             "prezzo_finale": price if price > 0 else None,
+            # Il prezzo SERP è un candidato utile per filtri/ordinamento,
+            # ma diventa "verificato" soltanto dopo il controllo corePrice.
             "prezzo_verificato": False,
+            "_serp_price_confidence": (
+                "base_price_node"
+                if price > 0
+                else "missing"
+            ),
             "sconto": (
                 f"-{discount_value}%"
                 if discount_value > 0
