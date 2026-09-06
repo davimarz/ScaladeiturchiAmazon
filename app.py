@@ -804,10 +804,27 @@ def _perform_search(target_count: int) -> None:
     st.session_state["no_more_results"] = False
 
     if not results:
-        # Non mostriamo all'utente differenze tra API e fallback HTML.
-        st.session_state["search_notice"] = (
-            "Amazon non ha restituito prodotti leggibili in questo momento. ""Riprova la ricerca: il catalogo può rispondere in modo temporaneamente variabile."
-        )
+        diagnostics = amazon_api.get_search_diagnostics()
+        reason = str(diagnostics.get("reason") or "")
+
+        if reason in {
+            "fetch_failed_or_blocked",
+            "html_without_product_signals",
+        }:
+            st.session_state["search_notice"] = (
+                "Il servizio Amazon è temporaneamente difficile da raggiungere. "
+                "Riprova tra qualche minuto."
+            )
+        elif reason == "product_markup_not_parsed":
+            st.session_state["search_notice"] = (
+                "Amazon ha restituito la pagina, ma i prodotti non sono leggibili "
+                "in questo momento. Riprova tra poco."
+            )
+        else:
+            st.session_state["search_notice"] = (
+                "Nessun prodotto disponibile per questa ricerca in questo momento. "
+                "Puoi riprovare oppure usare una parola chiave più generale."
+            )
     elif len(results) < target_count:
         st.session_state["search_notice"] = (
             f"Sono disponibili {len(results)} prodotti per questa ricerca."

@@ -35,7 +35,7 @@ MAX_SEARCH_PAGES = 10
 SEARCH_CACHE_TTL = 10 * 60
 PRICE_CACHE_TTL = 2 * 60
 HTTP_TIMEOUT = 8
-HTML_TIMEOUT = 5
+HTML_TIMEOUT = 10
 HTML_CACHE_TTL = 180
 DETAIL_SNAPSHOT_TTL = 120
 DETAIL_PRICE_WORKERS = 8
@@ -71,6 +71,15 @@ _CACHE_LOCK = threading.RLock()
 _HTTP_LOCAL = threading.local()
 _CREATORS_BLOCK_LOCK = threading.Lock()
 _CREATORS_BLOCKED_UNTIL = 0.0
+_SEARCH_DIAGNOSTICS_LOCK = threading.Lock()
+_LAST_SEARCH_DIAGNOSTICS: dict[str, Any] = {
+    "keyword": "",
+    "reason": "",
+    "pages_attempted": 0,
+    "html_variants_received": 0,
+    "html_variants_with_product_signals": 0,
+    "products_parsed": 0,
+}
 
 USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -111,6 +120,27 @@ _LAST_API_STATUS: dict[str, Any] = {
     "message": "",
 }
 
+
+
+def creators_circuit_open() -> bool:
+    """Indica se il circuit breaker Creators API è attualmente aperto."""
+    return _creators_temporarily_blocked()
+
+
+def _set_search_diagnostics(**values: Any) -> None:
+    with _SEARCH_DIAGNOSTICS_LOCK:
+        for key, value in values.items():
+            if key in _LAST_SEARCH_DIAGNOSTICS:
+                _LAST_SEARCH_DIAGNOSTICS[key] = value
+
+
+def get_search_diagnostics() -> dict[str, Any]:
+    """Diagnostica sintetica e priva di credenziali dell'ultima ricerca HTML."""
+    with _SEARCH_DIAGNOSTICS_LOCK:
+        result = dict(_LAST_SEARCH_DIAGNOSTICS)
+
+    result["creators_circuit_open"] = creators_circuit_open()
+    return result
 
 def _creators_temporarily_blocked() -> bool:
     with _CREATORS_BLOCK_LOCK:
@@ -1055,22 +1085,75 @@ def _parse_html_price(text: Any) -> float:
     return 0.0
 
 
-def _html_response_is_usable(status_code: int, text: str) -> bool:
-    if status_code != 200 or not text or len(text) < 1500:
-        return False
+def _html_response_classification(
+    status_code: int,
+    text: str,
+) -> str:
+    """Classifica una risposta HTML Amazon senza esporre dati sensibili."""
+    if status_code != 200:
+        return f"http_{status_code}"
+
+    if not text:
+        return "empty"
+
+    if len(text) < 1500:
+        return "too_short"
 
     lowered = text.lower()
+
     blocked_markers = (
+        # Inglese
         "robot check",
         "enter the characters you see below",
         "sorry! something went wrong!",
         "automated access",
+        "automated access to",
+        "captcha",
+        # Italiano
+        "verifica che sei una persona reale",
+        "verifica che tu sia una persona reale",
+        "inserisci i caratteri",
+        "inserisci i caratteri che vedi",
+        "digita i caratteri",
+        "digita i caratteri che vedi",
+        "non siamo riusciti a verificare",
+        "accesso automatizzato",
     )
-    return not any(marker in lowered for marker in blocked_markers)
+
+    if any(marker in lowered for marker in blocked_markers):
+        return "blocked"
+
+    return "ok"
+
+
+def _html_response_is_usable(status_code: int, text: str) -> bool:
+    return _html_response_classification(status_code, text) == "ok"
+
+
+def _html_has_search_product_signals(text: str) -> bool:
+    """Controllo rapido, compatibile anche con markup Amazon nuovi.
+
+    Non richiede i vecchi s-search-result/data-asin: un link /dp/ASIN è
+    sufficiente perché il parser V22 sappia ricostruire una scheda.
+    """
+    if not text:
+        return False
+
+    lowered = text.lower()
+
+    return any(
+        signal in lowered
+        for signal in (
+            "s-search-result",
+            "data-asin",
+            "/dp/",
+            "/gp/product/",
+        )
+    )
 
 
 def _fetch_amazon_html(url: str) -> Optional[str]:
-    """Scarica HTML Amazon con un percorso veloce e un solo fallback."""
+    """Scarica HTML Amazon con fallback adattivo e diagnostica essenziale."""
     headers = {
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.7,en;q=0.6",
         "Accept": (
@@ -1080,9 +1163,11 @@ def _fetch_amazon_html(url: str) -> Optional[str]:
     }
     cookies = {"lc-acbit": "it_IT", "i18n-prefs": "EUR"}
 
-    # Prima versione: curl_cffi con impersonazione Chrome. Niente sequenza di
-    # 4 browser diversi: in caso di blocco si passa subito al fallback.
+    # Primo fingerprint: Chrome generico. Il nome generico evita di dipendere
+    # da una specifica release supportata soltanto da alcune versioni curl_cffi.
     if HAS_CURL_CFFI and c_requests is not None:
+        chrome_returned_response = False
+
         try:
             response = c_requests.get(
                 url,
@@ -1092,13 +1177,68 @@ def _fetch_amazon_html(url: str) -> Optional[str]:
                 cookies=cookies,
                 allow_redirects=True,
             )
-            if _html_response_is_usable(response.status_code, response.text):
-                return response.text
-        except Exception:
-            pass
+            chrome_returned_response = True
+            classification = _html_response_classification(
+                response.status_code,
+                response.text,
+            )
 
-    # Seconda e ultima versione: Session HTTP riutilizzata per thread, quindi
-    # keep-alive/TLS vengono riusati nelle scansioni successive.
+            LOGGER.info(
+                "HTML curl profile=chrome status=%s class=%s len=%s",
+                response.status_code,
+                classification,
+                len(response.text or ""),
+            )
+
+            if classification == "ok":
+                return response.text
+
+            # Se il server ci ha risposto velocemente ma con una pagina bloccata
+            # o inutilizzabile, un fingerprint Safari può ottenere una risposta
+            # diversa. Non lo facciamo dopo un timeout per non sommare altri 10s.
+            if classification in {
+                "blocked",
+                "too_short",
+                "http_403",
+                "http_429",
+                "http_503",
+            }:
+                try:
+                    safari_response = c_requests.get(
+                        url,
+                        impersonate="safari",
+                        timeout=HTML_TIMEOUT,
+                        headers=headers,
+                        cookies=cookies,
+                        allow_redirects=True,
+                    )
+                    safari_classification = _html_response_classification(
+                        safari_response.status_code,
+                        safari_response.text,
+                    )
+
+                    LOGGER.info(
+                        "HTML curl profile=safari status=%s class=%s len=%s",
+                        safari_response.status_code,
+                        safari_classification,
+                        len(safari_response.text or ""),
+                    )
+
+                    if safari_classification == "ok":
+                        return safari_response.text
+                except Exception as exc:
+                    LOGGER.info(
+                        "HTML curl profile=safari error=%s",
+                        type(exc).__name__,
+                    )
+
+        except Exception as exc:
+            LOGGER.info(
+                "HTML curl profile=chrome error=%s",
+                type(exc).__name__,
+            )
+
+    # Fallback requests.Session con keep-alive/TLS riutilizzato per thread.
     try:
         session = _get_http_session()
         response = session.get(
@@ -1108,10 +1248,27 @@ def _fetch_amazon_html(url: str) -> Optional[str]:
             timeout=HTML_TIMEOUT,
             allow_redirects=True,
         )
-        if _html_response_is_usable(response.status_code, response.text):
+
+        classification = _html_response_classification(
+            response.status_code,
+            response.text,
+        )
+
+        LOGGER.info(
+            "HTML requests status=%s class=%s len=%s",
+            response.status_code,
+            classification,
+            len(response.text or ""),
+        )
+
+        if classification == "ok":
             return response.text
-    except requests.RequestException:
-        pass
+
+    except requests.RequestException as exc:
+        LOGGER.info(
+            "HTML requests error=%s",
+            type(exc).__name__,
+        )
 
     return None
 
@@ -1601,11 +1758,7 @@ def _fetch_search_html_variants(
     keyword: str,
     page: int,
 ) -> list[str]:
-    """Scarica in parallelo le varianti della stessa ricerca.
-
-    Tre tentativi paralleli costano circa il tempo del più lento,
-    non la somma dei tre timeout.
-    """
+    """Scarica in parallelo le varianti della stessa ricerca Amazon."""
     urls = _amazon_search_urls(keyword, page)
     html_pages: list[str] = []
 
@@ -1627,10 +1780,22 @@ def _fetch_search_html_variants(
             if html_text:
                 ordered[index] = html_text
 
+    lengths = [len(ordered[index]) for index in sorted(ordered)]
+
+    LOGGER.info(
+        "HTML search fetch keyword=%r page=%s variants_ok=%s/%s lengths=%s",
+        keyword,
+        page,
+        len(ordered),
+        len(urls),
+        lengths,
+    )
+
     for index in sorted(ordered):
         html_pages.append(ordered[index])
 
     return html_pages
+
 
 def _extract_products_from_html(
     html_text: str,
@@ -1751,6 +1916,20 @@ def _search_html_fallback(
 
     target = max(1, min(int(item_count or 10), MAX_RESULTS))
 
+    _set_search_diagnostics(
+        keyword=clean_keyword,
+        reason="running",
+        pages_attempted=0,
+        html_variants_received=0,
+        html_variants_with_product_signals=0,
+        products_parsed=0,
+    )
+
+    diagnostic_pages_attempted = 0
+    diagnostic_html_received = 0
+    diagnostic_signal_pages = 0
+    diagnostic_products_parsed = 0
+
     collected: list[dict[str, Any]] = []
     excluded = {str(asin).strip().upper() for asin in exclude_asins if asin}
     seen: set[str] = set(excluded)
@@ -1770,10 +1949,25 @@ def _search_html_fallback(
             page,
         )
 
+        diagnostic_pages_attempted += 1
+        diagnostic_html_received += len(html_pages)
+
         page_products: list[dict[str, Any]] = []
         page_merge_seen: set[str] = set()
 
         for html_text in html_pages:
+            # Sanity check rapido ma compatibile col fallback V22 basato su /dp/.
+            if not _html_has_search_product_signals(html_text):
+                LOGGER.info(
+                    "HTML search page skipped: no product signals keyword=%r page=%s len=%s",
+                    clean_keyword,
+                    page,
+                    len(html_text or ""),
+                )
+                continue
+
+            diagnostic_signal_pages += 1
+
             parsed = _extract_products_from_html(
                 html_text,
                 partner_tag=partner_tag,
@@ -1781,6 +1975,8 @@ def _search_html_fallback(
                 max_price=max_price,
                 require_prime=require_prime,
             )
+
+            diagnostic_products_parsed += len(parsed)
 
             for product in parsed:
                 asin = str(product.get("asin") or "").strip().upper()
@@ -1827,6 +2023,26 @@ def _search_html_fallback(
 
         if len(collected) >= target:
             break
+
+    if collected:
+        diagnostic_reason = "ok"
+    elif diagnostic_html_received == 0:
+        diagnostic_reason = "fetch_failed_or_blocked"
+    elif diagnostic_signal_pages == 0:
+        diagnostic_reason = "html_without_product_signals"
+    elif diagnostic_products_parsed == 0:
+        diagnostic_reason = "product_markup_not_parsed"
+    else:
+        diagnostic_reason = "no_matching_products"
+
+    _set_search_diagnostics(
+        keyword=clean_keyword,
+        reason=diagnostic_reason,
+        pages_attempted=diagnostic_pages_attempted,
+        html_variants_received=diagnostic_html_received,
+        html_variants_with_product_signals=diagnostic_signal_pages,
+        products_parsed=diagnostic_products_parsed,
+    )
 
     if sort_type == "Prezzo minimo":
         collected.sort(

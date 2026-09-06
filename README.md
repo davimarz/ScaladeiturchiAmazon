@@ -154,3 +154,23 @@ Correzioni principali:
 
 Questo intervento è mirato soprattutto a query comuni come `notebook`,
 nelle quali Amazon può servire un markup differente tra una richiesta e l'altra.
+
+
+## V23 - fetch Amazon resiliente
+
+Integrazione ragionata dei suggerimenti Base44:
+
+- HTML timeout aumentato da 5 a 10 secondi;
+- marker CAPTCHA/blocco aggiunti anche in italiano;
+- curl_cffi usa `chrome` come fingerprint principale;
+- `safari` viene provato soltanto quando Chrome ha ricevuto una risposta
+  bloccata/inutilizzabile, non dopo un timeout, per evitare ritardi eccessivi;
+- Requests Session resta l'ultimo fallback;
+- controllo di sanità della SERP compatibile anche con il parser V22:
+  accetta i vecchi marker oppure link `/dp/` e `/gp/product/`;
+- log diagnostici con lunghezza HTML, senza credenziali;
+- stato pubblico `get_search_diagnostics()` per distinguere fetch bloccato,
+  markup non leggibile e reale assenza di risultati;
+- messaggio utente differenziato e senza mostrare 403 o dettagli tecnici.
+
+La logica di verifica prezzi corePrice/apexPriceToPay non è stata modificata.
