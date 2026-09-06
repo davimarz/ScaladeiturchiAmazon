@@ -239,3 +239,18 @@ Modifiche:
 - vengono accettati solo ASIN reali estratti da URL Amazon;
 - le pagine prodotto Amazon continuano ad arricchire titolo, immagine e prezzo;
 - Creators API circuit breaker resta a 60 minuti.
+
+
+## V27 - fix NameError html_lib
+
+Corretto il crash:
+`NameError: name 'html_lib' is not defined`
+
+La funzione `_external_amazon_url()` usa `html_lib.unescape(...)`;
+ora `amazon_api.py` importa correttamente:
+
+```python
+import html as html_lib
+```
+
+Nessuna altra logica di ricerca è stata modificata.
