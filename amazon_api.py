@@ -27,6 +27,7 @@ import requests
 import api_budget
 import shared_results
 import inspect
+import search_relevance
 import streamlit as st
 from bs4 import BeautifulSoup
 
@@ -628,7 +629,8 @@ def _select_featured_listing(item: dict[str, Any]) -> Optional[dict[str, Any]]:
         ).upper() != "PRIME_EXCLUSIVE"
     ]
 
-    return regular[0] if regular else winners[0]
+    return regular[0] if regular else next((listing for listing in winners
+        if str(listing.get("type") or "").upper() != "SUBSCRIBEAND_SAVE"), None)
 
 
 def _item_to_product(
@@ -684,21 +686,8 @@ def _item_to_product(
                 or ""
             )
 
-        savings = price_block.get("savings") or {}
-        try:
-            discount_value = int(round(float(savings.get("percentage") or 0)))
-        except (TypeError, ValueError):
-            discount_value = 0
-
-        if (
-            discount_value <= 0
-            and old_price is not None
-            and final_price is not None
-            and old_price > final_price > 0
-        ):
-            discount_value = int(
-                round(((old_price - final_price) / old_price) * 100)
-            )
+        if old_price is not None and final_price is not None and old_price > final_price > 0:
+            discount_value = int(round((old_price - final_price) / old_price * 100))
 
         access_type = str(
             ((listing.get("dealDetails") or {}).get("accessType") or "")
@@ -977,16 +966,8 @@ def _extract_old_price_from_same_core(
                 break
             parent = parent.parent
 
-    # Fallback a blocchi corePrice noti, senza uscire verso altri widget.
-    for selector in (
-        "#apex_offerDisplay_desktop #corePrice_feature_div",
-        "#corePrice_feature_div",
-        "#corePriceDisplay_desktop_feature_div",
-        "[data-feature-name='corePrice']",
-    ):
-        node = soup.select_one(selector)
-        if node is not None and node not in scopes:
-            scopes.append(node)
+    if not scopes:
+        return None
 
     old_selectors = (
         "span.a-price.a-text-price span.a-offscreen",
@@ -1032,7 +1013,8 @@ def _extract_old_price_from_same_core(
     # Il riferimento più vicino sopra il prezzo corrente è normalmente
     # quello della stessa offerta (es. 43,00 sopra 38,78), evitando valori
     # di altri widget molto più alti.
-    return min(candidates)
+    unique = {round(value, 2) for value in candidates}
+    return unique.pop() if len(unique) == 1 else None
 
 
 def _extract_detail_prices_from_soup(
@@ -2662,6 +2644,8 @@ def _search_html_fallback(
         added = 0
 
         for page_index, product in enumerate(parsed):
+            if not search_relevance.matches(clean_keyword, product.get("titolo")):
+                continue
             asin = str(product.get("asin") or "").strip().upper()
 
             if (
@@ -2806,11 +2790,13 @@ def _search_html_fallback(
         external_products = _discover_amazon_products_external(
             keyword=clean_keyword,
             partner_tag=partner_tag,
-            target=missing,
+            target=min(MAX_RESULTS, max(10, missing * 3)),
             exclude_asins=seen,
         )
 
         for product in external_products:
+            if not search_relevance.matches(clean_keyword, product.get("titolo")):
+                continue
             asin = str(product.get("asin") or "").strip().upper()
             if len(asin) != 10 or asin in seen:
                 continue
@@ -2838,7 +2824,8 @@ def _search_html_fallback(
         # Senza conferma Prime, un risultato non soddisfa il filtro Prime.
         collected = [
             product for product in collected
-            if (not require_prime or product.get("is_prime") is True)
+            if search_relevance.matches(clean_keyword, product.get("titolo"))
+            and (not require_prime or product.get("is_prime") is True)
             and _passes_local_filters(product, min_price, max_price)
         ]
 
@@ -3130,7 +3117,7 @@ def _offerte_uncached(
                     if html_fallback_enabled():
                         product = _verify_product_detail_price(product)
 
-            if not product:
+            if not product or not search_relevance.matches(query, product.get("titolo")):
                 continue
 
             if not _passes_local_filters(

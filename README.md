@@ -355,3 +355,13 @@ Questa sezione sostituisce le durate e il limite per sessione descritti sopra.
 - I collegamenti delle schede prodotto e il collegamento HAUL restano disponibili. La privacy del sito va aggiornata in base alla configurazione effettivamente pubblicata.
 
 Distribuire tutti i file dello ZIP, comprese la cartella browser_identity e i moduli shared_results.py e visitor_limit.py. Conservare i Secrets reali; aggiungere searches_per_hour = 10 nella sezione amazon_api. Non cancellare .runtime sul server. Nessun test reale sul server Streamlit del cliente è stato eseguito.
+
+
+## Pertinenza e prezzi (aggiornamento corrente)
+
+- Aggiunto search_relevance.py: verifica conservativa dei termini nel titolo per risultati API e web, con sinonimi per notebook, smartphone e cuffie. Una ricerca notebook non deve essere soddisfatta da adesivi o custodie per notebook. Le ricerche editoriali che iniziano con offerte restano ampie per la Vetrina.
+- Il controllo è lessicale, non un classificatore universale: può escludere prodotti pertinenti con titoli incompleti. Non verifica autonomamente specifiche tecniche, categoria o autenticità del marchio. Vengono mostrati meno risultati se manca pertinenza, senza riempire con accessori.
+- Prezzo barrato HTML solo dal widget che contiene il prezzo corrente. Più riferimenti diversi nello stesso widget: nessun prezzo barrato/sconto. Percentuale API calcolata dai prezzi della stessa offerta; offerte solo in abbonamento escluse dalla selezione ordinaria.
+- Il prezzo di riferimento Amazon non viene presentato come prova di un prezzo storico realmente praticato. Rimangono possibili variazioni di variante, disponibilità, spedizione e condizioni Amazon.
+- Test locali su casi sintetici; nessuna verifica reale del prezzo sul sito Amazon eseguita.
+- Testo HAUL abbreviato mantenendo le condizioni fornite; rimosso il pulsante Apri Amazon HAUL e l'avvertenza ripetuta dalle schede.

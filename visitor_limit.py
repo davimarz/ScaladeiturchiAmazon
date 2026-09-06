@@ -9,6 +9,7 @@ def check(visitor, limit=10, consume=False):
         conn.execute('CREATE TABLE IF NOT EXISTS browser_searches (visitor TEXT, at REAL)')
         conn.execute('CREATE INDEX IF NOT EXISTS browser_search_idx ON browser_searches(visitor, at)')
         conn.execute('CREATE INDEX IF NOT EXISTS browser_search_time ON browser_searches(at)')
+        conn.execute('CREATE INDEX IF NOT EXISTS browser_search_time ON browser_searches(at)')
         conn.execute('BEGIN IMMEDIATE')
         now = time.time()
         conn.execute('DELETE FROM browser_searches WHERE at <= ?', (now-3600,))

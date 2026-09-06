@@ -1144,7 +1144,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
 
     badges_html = "".join(badge_parts)
 
-    note = "Prezzi e disponibilità possono cambiare: verifica su Amazon."
+    note = ""
 
     saving_basis_label = str(product.get("saving_basis_label") or "").strip()
 
@@ -1154,7 +1154,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         and final_price is not None
         and old_price > final_price
     ):
-        note += f" Rif.: {html.escape(saving_basis_label)}."
+        note += f"Prezzo di riferimento: {html.escape(saving_basis_label)}."
 
     if sold_qty_month:
         note += (
@@ -1384,25 +1384,15 @@ if active_tab == "haul":
         <div style='background:linear-gradient(135deg,#fff7ed,#fffbeb);
         border:1px solid #fdba74;border-radius:10px;padding:9px 10px;
         margin:0 0 8px 0;color:#7c2d12;font-size:.72rem;line-height:1.45;'>
-        <strong>Risparmi Amazon Haul:</strong>
-        con <strong>3 articoli</strong> la consegna è gratuita;
-        con <strong>4 articoli</strong> ottieni il <strong>5% di sconto</strong>;
-        con <strong>5 o più articoli</strong> ottieni il <strong>10% di sconto</strong>.
-        <br>
-        <span style='font-size:.64rem;color:#9a3412;'>
-        Le condizioni promozionali possono cambiare nel tempo: verifica sempre
-        i dettagli aggiornati direttamente su Amazon Haul.
-        </span>
+        <strong>Amazon Haul:</strong> spedizione gratis con 3 articoli;
+        <strong>−5%</strong> con 4; <strong>−10%</strong> con 5 o più.
+        <br><small>Si applicano le condizioni Amazon Haul.</small>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.link_button(
-        "🛍️ Apri Amazon HAUL",
-        haul_url,
-        use_container_width=True,
-    )
+
 
     current_token = str(st.session_state["haul_refresh_token"])
 
@@ -1446,7 +1436,7 @@ if active_tab == "haul":
     else:
         st.info(
             "Non è stato possibile leggere i prodotti HAUL in questo momento. "
-            "Premi di nuovo HAUL per riprovare oppure apri la vetrina Amazon."
+            "Premi di nuovo HAUL per riprovare."
         )
 
 elif active_tab == "vetrina":
@@ -1702,6 +1692,10 @@ elif active_tab == "privacy":
         I dati inseriti nel modulo contatti vengono utilizzati esclusivamente
         per rispondere alla richiesta inviata. Il sito può contenere collegamenti
         esterni ad Amazon.it.
+
+        Per applicare il limite orario delle ricerche, il browser conserva
+        un identificatore casuale. Il server lo associa agli orari delle
+        ricerche recenti; questo identificatore non richiede nome o email.
 
         Per applicare il limite orario delle ricerche, il browser conserva
         un identificatore casuale. Il server lo associa agli orari delle
