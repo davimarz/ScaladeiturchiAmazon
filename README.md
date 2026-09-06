@@ -82,3 +82,12 @@ Quando Creators API risponde `403 AssociateNotEligible`, il backend:
 - desktop: 160x160 -> 190x190;
 - preferenza per `data-a-dynamic-image` e `srcset` ad alta risoluzione;
 - prima immagine visibile: eager loading + priorità alta.
+
+
+## V18 - messaggio prezzo non verificato
+
+Il messaggio:
+`Prezzo non verificabile con certezza dalla pagina prodotto.`
+
+è stato sostituito con:
+`Il prezzo può cambiare frequentemente: verifica quello aggiornato direttamente dal link Amazon.`

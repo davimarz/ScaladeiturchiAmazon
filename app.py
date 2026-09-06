@@ -967,7 +967,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     if source == "amazon_html_detail_verified":
         note = "Prezzo verificato nel blocco principale della pagina prodotto Amazon."
     elif source == "amazon_html_detail_unverified":
-        note = "Prezzo non verificabile con certezza dalla pagina prodotto."
+        note = "Il prezzo può cambiare frequentemente: verifica quello aggiornato direttamente dal link Amazon."
     elif source.startswith("amazon_html"):
         note = "Prezzo in attesa di verifica sulla pagina prodotto."
     else:
