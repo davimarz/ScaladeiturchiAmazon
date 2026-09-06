@@ -25,6 +25,8 @@ from urllib.parse import (
 
 import requests
 import api_budget
+import shared_results
+import inspect
 import streamlit as st
 from bs4 import BeautifulSoup
 
@@ -3007,7 +3009,19 @@ def _get_items_cached(
     return tuple(item for item in items if isinstance(item, dict))
 
 
-def ottieni_offerte_avanzate(
+def ottieni_offerte_avanzate(*args, **kwargs):
+    bound = inspect.signature(_offerte_uncached).bind(*args, **kwargs)
+    bound.apply_defaults()
+    values = bound.arguments
+    values["keyword"] = " ".join(str(values["keyword"] or "").split()).casefold()
+    values["exclude_asins"] = tuple(sorted(set(values["exclude_asins"])))
+    values["_cache_buster"] = None
+    values["_partner_tag_override"] = get_partner_tag() or values["_partner_tag_override"]
+    key = ("search", repr(sorted(values.items())))
+    return shared_results.get(key, 600, lambda: _offerte_uncached(**values), stale_for=0)
+
+
+def _offerte_uncached(
     keyword: str = "",
     sort_type: str = "Prezzo minimo",
     solo_spedizione_gratuita: bool = False,
@@ -3241,14 +3255,12 @@ def ottieni_vetrina_casuale(
 ) -> list[dict[str, Any]]:
     # Un click o una nuova sessione non invalidano la vetrina condivisa.
     del refresh_token
-    return _vetrina_condivisa(
-        get_partner_tag() or str(partner_tag or "").strip(),
-        max(1, min(int(item_count or 3), 3)),
-        str(int(time.time() // 1800)),
-    )
+    tag = get_partner_tag() or str(partner_tag or "").strip()
+    count = max(1, min(int(item_count or 3), 3))
+    return shared_results.get(("vetrina", tag, count), 600,
+                              lambda: _vetrina_condivisa(tag, count, str(time.time_ns())))
 
 
-@st.cache_data(ttl=30 * 60, show_spinner=False, max_entries=32)
 def _vetrina_condivisa(
     partner_tag: Optional[str] = None,
     item_count: int = 3,
@@ -3484,8 +3496,14 @@ def _extract_haul_products_from_html(
     return products
 
 
-@st.cache_data(ttl=3 * 60, show_spinner=False, max_entries=96)
-def ottieni_haul_casuale(
+def ottieni_haul_casuale(partner_tag=None, item_count=10, refresh_token=None, exclude_asins=()):
+    tag = get_partner_tag() or str(partner_tag or "").strip()
+    count = max(1, min(int(item_count or 10), 10))
+    return shared_results.get(("haul", tag, count), 60,
+                              lambda: _haul_uncached(tag, count, str(time.time_ns())))
+
+
+def _haul_uncached(
     partner_tag: Optional[str] = None,
     item_count: int = 10,
     refresh_token: Optional[str] = None,
@@ -3503,7 +3521,7 @@ def ottieni_haul_casuale(
     target = max(1, min(int(item_count or 10), 10))
     if not html_fallback_enabled():
         return []
-    html_text = _get_amazon_html_cached(HAUL_STORE_URL)
+    html_text = _fetch_amazon_html(HAUL_STORE_URL)
 
     if not html_text:
         raise api_budget.BudgetUnavailable("Pagina HAUL temporaneamente non leggibile")

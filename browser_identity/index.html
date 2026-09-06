@@ -1,0 +1,13 @@
+<!doctype html><html><body><script>
+function send(type, extra={}) { window.parent.postMessage({isStreamlitMessage:true,type,...extra}, '*'); }
+window.addEventListener('message', event => {
+ if(event.data.type !== 'streamlit:render') return;
+ try {
+  let id = localStorage.getItem('amazon_visitor_v1');
+  if(!id) { id = crypto.randomUUID(); localStorage.setItem('amazon_visitor_v1',id); }
+  send('streamlit:setComponentValue',{value:id,dataType:'json'});
+ } catch(e) { send('streamlit:setComponentValue',{value:'storage_unavailable',dataType:'json'}); }
+});
+send('streamlit:componentReady',{apiVersion:1});
+send('streamlit:setFrameHeight',{height:0});
+</script></body></html>

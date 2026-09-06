@@ -339,3 +339,19 @@ Questa sezione sostituisce le precedenti indicazioni sulla disattivazione del we
 - Al limite i pulsanti di ricerca/caricamento sono disabilitati, i risultati restano consultabili e compare un messaggio breve con il pulsante Amazon. Il collegamento usa il termine attualmente inserito.
 - Il limite è per sessione, NON identifica un cliente: nuove sessioni o riconnessioni che perdono lo stato possono azzerarlo. Per un limite per persona persistente occorrono autenticazione e contatore associato all'account. Il budget API globale rimane la protezione comune.
 - Rimossi i dettagli pubblici su cache, parser e fonti tecniche dei prezzi; le informazioni diagnostiche restano nei log del server.
+
+
+## Versione corrente: cache condivise e limite orario browser
+
+Questa sezione sostituisce le durate e il limite per sessione descritti sopra.
+
+- Vetrina: 600 secondi dal completamento del caricamento. HAUL: 60 secondi dal completamento; refresh e nuove visite entro il minuto ricevono la stessa selezione. Alla scadenza si recupera alla prima visita, senza job periodico Amazon. Non è garantito che la nuova selezione sia diversa se il catalogo offre pochi prodotti.
+- Ricerca: cache completa 600 secondi, chiave per termine normalizzato, filtri, ordinamento, quantità e ASIN esclusi. Un solo recupero simultaneo per chiave nello stesso processo; ricerche differenti indipendenti.
+- In caso di errore, pausa condivisa di 30 secondi. Vetrina/HAUL possono conservare le schede precedenti per massimo 15 minuti dopo la scadenza, con prezzi e sconti nascosti. Dopo questo intervallo nessuna scheda vecchia viene servita. I fallimenti sono nei log.
+- Budget API globale invariato. Cache condivisa in memoria dello stesso processo: un riavvio la perde. Per repliche/server separati occorre centralizzarla; il contatore SQLite è condiviso soltanto dove il file è comune e persistente.
+- Limite `searches_per_hour = 10` per browser negli ultimi 3600 secondi, con prenotazione atomica prima di Cerca/Carica altri 10. Tentativi ammessi consumano una ricerca anche se senza risultati; ordinamento, navigazione locale, HAUL e Vetrina non consumano il limite personale.
+- `browser_identity/index.html` è un componente locale che conserva un UUID casuale in localStorage. Nessun provider esterno, email o IP. L'identificatore persiste nel browser; cancellare i dati del sito o usare un altro browser può aggirarlo. Se storage browser o database non disponibili, la ricerca personale non parte. Il contatore non è una forma di autenticazione.
+- Il pulsante Continua su AMAZON nella scheda Cerca è visibile soltanto a limite raggiunto. Scompare appena si libera una ricerca, controllando ogni 15 secondi mentre la scheda è attiva. Nessuna interrogazione Amazon viene fatta dal controllo scadenza.
+- I collegamenti delle schede prodotto e il collegamento HAUL restano disponibili. La privacy del sito va aggiornata in base alla configurazione effettivamente pubblicata.
+
+Distribuire tutti i file dello ZIP, comprese la cartella browser_identity e i moduli shared_results.py e visitor_limit.py. Conservare i Secrets reali; aggiungere searches_per_hour = 10 nella sezione amazon_api. Non cancellare .runtime sul server. Nessun test reale sul server Streamlit del cliente è stato eseguito.

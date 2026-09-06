@@ -12,6 +12,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 import amazon_api
+import visitor_limit
+from pathlib import Path
 
 
 st.set_page_config(
@@ -20,6 +22,13 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+_browser_identity = components.declare_component(
+    "browser_identity", path=str(Path(__file__).parent / "browser_identity")
+)
+_browser_value = _browser_identity(key="persistent_browser_identity", default=None)
+if isinstance(_browser_value, str) and re.fullmatch(r"[a-fA-F0-9-]{36}", _browser_value):
+    st.session_state["visitor_id"] = _browser_value
 
 LOGGER = logging.getLogger("amazon_affiliate_app")
 MAX_RESULTS = amazon_api.MAX_RESULTS
@@ -779,32 +788,55 @@ def _on_search_sort_change() -> None:
 
 
 SEARCH_LIMIT_NOTICE = (
-    "Hai raggiunto il limite di ricerche per questa sessione. "
-    "Puoi continuare a cercare direttamente su Amazon."
+    "Hai raggiunto il limite di 10 ricerche nell’ultima ora. "
+    "Puoi continuare direttamente su Amazon."
 )
 
 
 def _session_search_limit() -> int:
     try:
-        return max(1, int(st.secrets.get("amazon_api", {}).get("searches_per_session", 10)))
+        return max(1, int(st.secrets.get("amazon_api", {}).get("searches_per_hour", 10)))
     except Exception:
         return 10
 
 
+def _quota_status(consume=False):
+    visitor = st.session_state.get("visitor_id")
+    if not visitor:
+        return {"allowed": False, "remaining": None, "retry_at": 0}
+    try:
+        return visitor_limit.check(visitor, _session_search_limit(), consume)
+    except Exception as exc:
+        LOGGER.error("Limite visitatore non disponibile: %s", type(exc).__name__)
+        return {"allowed": False, "remaining": None, "retry_at": 0}
+
+
 def _session_limit_reached() -> bool:
-    return int(st.session_state.get("searches_used", 0)) >= _session_search_limit()
+    return _quota_status()["remaining"] == 0
+
+
+@st.fragment(run_every="15s")
+def _watch_quota_expiry():
+    blocked = _session_limit_reached()
+    previous = st.session_state.get("quota_was_blocked", blocked)
+    st.session_state["quota_was_blocked"] = blocked
+    if previous != blocked:
+        st.rerun()
 
 
 def _search_allowed() -> bool:
-    if _session_limit_reached():
-        st.session_state["search_notice"] = SEARCH_LIMIT_NOTICE
-        return False
     now = time.monotonic()
     if now < st.session_state.get("next_search_at", 0):
         st.session_state["search_notice"] = "Attendi un momento prima della prossima ricerca."
         return False
+    status = _quota_status(consume=True)
+    if not status["allowed"]:
+        st.session_state["search_notice"] = (
+            SEARCH_LIMIT_NOTICE if status["remaining"] == 0
+            else "La ricerca non è disponibile in questo momento. Riprova tra poco."
+        )
+        return False
     st.session_state["next_search_at"] = now + 5
-    st.session_state["searches_used"] = int(st.session_state.get("searches_used", 0)) + 1
     return True
 
 
@@ -817,7 +849,7 @@ def _amazon_request(function, **kwargs):
         st.session_state["amazon_unavailable"] = True
         st.session_state["search_notice"] = (
             "La ricerca interna è temporaneamente non disponibile. "
-            "Puoi continuare direttamente su Amazon."
+            "Riprova tra poco."
         )
         return None
 
@@ -1375,8 +1407,7 @@ if active_tab == "haul":
     current_token = str(st.session_state["haul_refresh_token"])
 
     if (
-        st.session_state.get("haul_loaded_token") != current_token
-        and partner_tag
+        partner_tag
     ):
         previous_asins = tuple(
             str(asin).strip().upper()
@@ -1392,8 +1423,8 @@ if active_tab == "haul":
             )
 
         new_haul = list(haul_products or [])
+        st.session_state["offerte_haul"] = new_haul
         if new_haul:
-            st.session_state["offerte_haul"] = new_haul
             st.session_state["haul_previous_asins"] = [
                 str(product.get("asin") or "").strip().upper()
                 for product in new_haul
@@ -1430,11 +1461,10 @@ elif active_tab == "vetrina":
         unsafe_allow_html=True,
     )
 
-    current_token = str(int(time.time() // 1800))
+    current_token = "shared"
 
     if (
-        st.session_state.get("vetrina_loaded_token") != current_token
-        and partner_tag
+        partner_tag
     ):
         with st.spinner("Aggiornamento offerte Amazon..."):
             showcase = _amazon_request(amazon_api.ottieni_vetrina_casuale,
@@ -1535,16 +1565,19 @@ elif active_tab == "cerca":
 
     if _session_limit_reached():
         st.info(SEARCH_LIMIT_NOTICE)
-    elif st.session_state.get("search_notice"):
+    elif st.session_state.get("search_notice") and st.session_state["search_notice"] != SEARCH_LIMIT_NOTICE:
         st.info(st.session_state["search_notice"])
 
-    st.link_button(
-        "Continua la ricerca su Amazon",
-        amazon_api.build_amazon_search_link(
-            str(st.session_state.get("search_keyword_input") or "offerte")
-        ),
-        use_container_width=True,
-    )
+    if _session_limit_reached():
+        st.link_button(
+            "Continua su AMAZON",
+            amazon_api.build_amazon_search_link(
+                str(st.session_state.get("search_keyword_input") or "offerte")
+            ),
+            use_container_width=True,
+        )
+    _watch_quota_expiry()
+
 
     results = st.session_state.get("offerte", [])
 
@@ -1669,6 +1702,10 @@ elif active_tab == "privacy":
         I dati inseriti nel modulo contatti vengono utilizzati esclusivamente
         per rispondere alla richiesta inviata. Il sito può contenere collegamenti
         esterni ad Amazon.it.
+
+        Per applicare il limite orario delle ricerche, il browser conserva
+        un identificatore casuale. Il server lo associa agli orari delle
+        ricerche recenti; questo identificatore non richiede nome o email.
 
         Le credenziali tecniche del sito sono conservate nei Secrets di
         Streamlit e non devono essere pubblicate nel repository GitHub.
