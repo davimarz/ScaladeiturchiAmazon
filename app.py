@@ -827,7 +827,8 @@ def _perform_search(target_count: int) -> None:
             )
     elif len(results) < target_count:
         st.session_state["search_notice"] = (
-            f"Sono disponibili {len(results)} prodotti per questa ricerca."
+            f"Ho trovato {len(results)} prodotti per questa ricerca. "
+            "Puoi riprovare tra poco per cercarne altri."
         )
     else:
         st.session_state["search_notice"] = ""

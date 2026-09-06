@@ -10,7 +10,15 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
-from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import (
+    parse_qs,
+    parse_qsl,
+    unquote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlunparse,
+)
 
 import requests
 import streamlit as st
@@ -40,6 +48,8 @@ HTML_CACHE_TTL = 180
 DETAIL_SNAPSHOT_TTL = 180
 DETAIL_HTML_TIMEOUT = 7
 DETAIL_PRICE_WORKERS = 5
+EXTERNAL_DISCOVERY_TIMEOUT = 8
+EXTERNAL_DISCOVERY_MAX_PAGES = 2
 CREATORS_403_COOLDOWN = 60 * 60
 SEARCH_HTML_CACHE_MAX = 24
 DETAIL_SNAPSHOT_CACHE_MAX = 256
@@ -66,7 +76,18 @@ RE_MONTHLY_BOUGHT = re.compile(
 _HTML_CACHE: dict[str, tuple[float, str]] = {}
 _DETAIL_SNAPSHOT_CACHE: dict[
     str,
-    tuple[float, tuple[Optional[float], Optional[float], int, Optional[int], str]],
+    tuple[
+        float,
+        tuple[
+            Optional[float],
+            Optional[float],
+            int,
+            Optional[int],
+            str,
+            str,
+            str,
+        ],
+    ],
 ] = {}
 _CACHE_LOCK = threading.RLock()
 _HTTP_LOCAL = threading.local()
@@ -936,21 +957,86 @@ def _extract_detail_page_prices(
     return _extract_detail_prices_from_soup(soup)
 
 
+
+def _extract_detail_identity_from_soup(
+    soup: BeautifulSoup,
+) -> tuple[str, str]:
+    """Titolo e immagine principale dalla pagina prodotto."""
+    title = ""
+
+    product_title = soup.select_one("#productTitle")
+    if product_title is not None:
+        title = " ".join(product_title.get_text(" ", strip=True).split())
+
+    if not title:
+        meta_title = soup.select_one("meta[property='og:title']")
+        if meta_title is not None:
+            title = " ".join(str(meta_title.get("content") or "").split())
+
+    image_url = ""
+
+    image = (
+        soup.select_one("#landingImage")
+        or soup.select_one("#imgBlkFront")
+        or soup.select_one("#ebooksImgBlkFront")
+        or soup.select_one("img[data-a-dynamic-image]")
+    )
+
+    if image is not None:
+        old_hires = str(image.get("data-old-hires") or "").strip()
+        if old_hires:
+            image_url = old_hires
+        else:
+            image_url = _best_serp_image_url(image)
+
+    if not image_url:
+        meta_image = soup.select_one("meta[property='og:image']")
+        if meta_image is not None:
+            image_url = str(meta_image.get("content") or "").strip()
+
+    return title, image_url
+
 def _extract_detail_snapshot(
     html_text: str,
-) -> tuple[Optional[float], Optional[float], int, Optional[int], str]:
+) -> tuple[
+    Optional[float],
+    Optional[float],
+    int,
+    Optional[int],
+    str,
+    str,
+    str,
+]:
     if not html_text:
-        return None, None, 0, None, ""
+        return None, None, 0, None, "", "", ""
 
     soup = BeautifulSoup(html_text, "html.parser")
     final_price, old_price, discount_value = _extract_detail_prices_from_soup(soup)
     sold_qty, sold_label = _extract_monthly_bought(soup)
-    return final_price, old_price, discount_value, sold_qty, sold_label
+    detail_title, detail_image = _extract_detail_identity_from_soup(soup)
+
+    return (
+        final_price,
+        old_price,
+        discount_value,
+        sold_qty,
+        sold_label,
+        detail_title,
+        detail_image,
+    )
 
 
 def _get_detail_snapshot_cached(
     detail_url: str,
-) -> tuple[Optional[float], Optional[float], int, Optional[int], str]:
+) -> tuple[
+    Optional[float],
+    Optional[float],
+    int,
+    Optional[int],
+    str,
+    str,
+    str,
+]:
     now = time.time()
 
     with _CACHE_LOCK:
@@ -990,9 +1076,20 @@ def _verify_product_detail_price(
     if not detail_url:
         detail_url = f"https://www.amazon.it/dp/{asin}?th=1"
 
-    final_price, old_price, discount_value, sold_qty, sold_label = (
-        _get_detail_snapshot_cached(detail_url)
-    )
+    (
+        final_price,
+        old_price,
+        discount_value,
+        sold_qty,
+        sold_label,
+        detail_title,
+        detail_image,
+    ) = _get_detail_snapshot_cached(detail_url)
+
+    if detail_title:
+        verified["titolo"] = detail_title
+    if detail_image:
+        verified["immagine_url"] = detail_image
 
     if final_price is None or final_price <= 0:
         verified["_search_prezzo_finale"] = verified.get("prezzo_finale")
@@ -1757,6 +1854,24 @@ def _amazon_search_urls(keyword: str, page: int) -> tuple[str, ...]:
     return tuple(dict.fromkeys(variants))
 
 
+
+def _amazon_mobile_search_urls(
+    keyword: str,
+    page: int,
+) -> tuple[str, ...]:
+    """Endpoint Amazon mobile/lightweight, diverso dalla SERP desktop."""
+    clean = " ".join(str(keyword or "").strip().split())
+    page_num = max(1, int(page or 1))
+
+    variants = [
+        "https://www.amazon.it/gp/aw/s?"
+        + urlencode({"k": clean, "page": page_num}),
+        "https://www.amazon.it/gp/aw/s?"
+        + urlencode({"i": "aps", "k": clean, "page": page_num}),
+    ]
+
+    return tuple(dict.fromkeys(variants))
+
 def _fetch_search_html_urls(
     urls: tuple[str, ...],
     keyword: str,
@@ -1800,6 +1915,166 @@ def _fetch_search_html_urls(
 
     return pages
 
+
+
+def _external_amazon_url(href: str) -> str:
+    """Estrae un URL amazon.it diretto anche dai redirect DuckDuckGo."""
+    raw = html_lib.unescape(str(href or "").strip())
+    if not raw:
+        return ""
+
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return ""
+
+    host = (parsed.hostname or "").lower()
+
+    if host in {"amazon.it", "www.amazon.it"}:
+        return raw
+
+    if "duckduckgo.com" in host:
+        params = parse_qs(parsed.query)
+        target = str((params.get("uddg") or [""])[0]).strip()
+        if target:
+            target = unquote(target)
+            try:
+                target_parsed = urlparse(target)
+                target_host = (target_parsed.hostname or "").lower()
+                if target_host in {"amazon.it", "www.amazon.it"}:
+                    return target
+            except Exception:
+                return ""
+
+    return ""
+
+
+def _fetch_external_search_html(url: str) -> Optional[str]:
+    """Fetch leggero di un motore esterno, usato soltanto come ultima risorsa."""
+    try:
+        session = _get_http_session()
+        response = session.get(
+            url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "it-IT,it;q=0.9,en;q=0.6",
+            },
+            timeout=EXTERNAL_DISCOVERY_TIMEOUT,
+            allow_redirects=True,
+        )
+        if response.status_code == 200 and len(response.text or "") >= 1000:
+            return response.text
+    except requests.RequestException as exc:
+        LOGGER.info(
+            "External discovery error=%s",
+            type(exc).__name__,
+        )
+
+    return None
+
+
+def _discover_amazon_products_external(
+    keyword: str,
+    partner_tag: str,
+    target: int,
+    exclude_asins: set[str],
+) -> list[dict[str, Any]]:
+    """Scopre ASIN Amazon tramite indice web se Amazon Search è bloccata.
+
+    I dati mostrati vengono poi corretti/arricchiti dalla pagina prodotto Amazon.
+    """
+    clean = " ".join(str(keyword or "").strip().split())
+    if not clean or target <= 0:
+        return []
+
+    query_variants = (
+        f'site:amazon.it/dp/ "{clean}" Amazon',
+        f'site:amazon.it/gp/product/ "{clean}" Amazon',
+    )
+
+    found: list[dict[str, Any]] = []
+    seen = set(exclude_asins)
+
+    for query in query_variants[:EXTERNAL_DISCOVERY_MAX_PAGES]:
+        if len(found) >= target:
+            break
+
+        url = (
+            "https://html.duckduckgo.com/html/?"
+            + urlencode({"q": query, "kl": "it-it"})
+        )
+        html_text = _fetch_external_search_html(url)
+        if not html_text:
+            continue
+
+        soup = BeautifulSoup(html_text, "html.parser")
+
+        links = soup.select(
+            "a.result__a, a.result-link, .result a[href], a[href]"
+        )
+
+        for link in links:
+            href = str(link.get("href") or "").strip()
+            amazon_url = _external_amazon_url(href)
+            if not amazon_url:
+                continue
+
+            match = RE_ASIN.search(amazon_url)
+            if not match:
+                continue
+
+            asin = match.group(1).upper()
+            if asin in seen:
+                continue
+
+            title = " ".join(link.get_text(" ", strip=True).split())
+            if len(title) < 3:
+                title = f"Prodotto Amazon {asin}"
+
+            detail_page_url = _normalize_product_detail_url(
+                amazon_url,
+                asin,
+            )
+
+            found.append({
+                "asin": asin,
+                "titolo": title,
+                "immagine_url": "",
+                "prezzo_iniziale": None,
+                "prezzo_finale": None,
+                "prezzo_verificato": False,
+                "sconto": "",
+                "sconto_val": 0,
+                "saving_basis_label": "",
+                "is_prime_exclusive": False,
+                "is_prime": False,
+                "prime_filter_match": False,
+                "tipo_offerta": "",
+                "sold_qty_month": None,
+                "sold_qty_label": "",
+                "sales_rank": None,
+                "sales_rank_category": "",
+                "detail_page_url": detail_page_url,
+                "link_affiliato": _affiliate_detail_url(
+                    detail_page_url,
+                    asin,
+                    partner_tag,
+                ),
+                "source": "external_discovery_amazon_url",
+            })
+            seen.add(asin)
+
+            if len(found) >= target:
+                break
+
+    LOGGER.info(
+        "External discovery keyword=%r products=%s target=%s",
+        clean,
+        len(found),
+        target,
+    )
+
+    return found
 
 def _extract_products_from_html(
     html_text: str,
@@ -2050,7 +2325,29 @@ def _search_html_fallback(
             break
 
         # ------------------------------------------------------------
-        # FASE C: se la PRIMA pagina non ha prodotto alcun segnale utile,
+        # FASE C: Amazon mobile/lightweight.
+        # Usa un percorso diverso da /s e può funzionare quando la SERP
+        # desktop viene filtrata dai sistemi anti-bot.
+        # ------------------------------------------------------------
+        mobile_pages = _fetch_search_html_urls(
+            _amazon_mobile_search_urls(clean_keyword, page),
+            keyword=clean_keyword,
+            page=page,
+            stage="mobile",
+        )
+
+        diagnostic_html_received += len(mobile_pages)
+
+        for html_text in mobile_pages:
+            merge_html_page(html_text, page, page_seen)
+            if len(discovered) >= target:
+                break
+
+        if len(discovered) >= target:
+            break
+
+        # ------------------------------------------------------------
+        # FASE D: se la PRIMA pagina non ha prodotto alcun segnale utile,
         # un solo retry controllato dopo breve pausa.
         # Fallimenti non vengono cacheati, quindi questo è un fetch reale.
         # ------------------------------------------------------------
@@ -2084,8 +2381,38 @@ def _search_html_fallback(
         )
 
     # -----------------------------------------------------------------
+    # ULTIMA RISORSA: se Amazon Search desktop/mobile non ha prodotto
+    # abbastanza ASIN, usa un indice web solo per trovare URL Amazon reali.
+    # Poi la pagina prodotto Amazon resta la fonte di titolo/immagine/prezzo.
+    # -----------------------------------------------------------------
+    if len(discovered) < target:
+        missing = target - len(discovered)
+
+        external_products = _discover_amazon_products_external(
+            keyword=clean_keyword,
+            partner_tag=partner_tag,
+            target=missing,
+            exclude_asins=seen,
+        )
+
+        for product in external_products:
+            asin = str(product.get("asin") or "").strip().upper()
+            if len(asin) != 10 or asin in seen:
+                continue
+
+            seen.add(asin)
+            product.setdefault(
+                "_amazon_position",
+                10_000 + len(discovered),
+            )
+            discovered.append(product)
+
+            if len(discovered) >= target:
+                break
+
+    # -----------------------------------------------------------------
     # SECONDA FASE: la verifica prezzo non blocca più la discovery.
-    # A questo punto abbiamo già trovato fino a 10 ASIN reali.
+    # A questo punto abbiamo raccolto fino a 10 ASIN reali.
     # -----------------------------------------------------------------
     collected = list(discovered[:target])
 

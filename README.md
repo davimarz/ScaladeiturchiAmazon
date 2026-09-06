@@ -196,3 +196,27 @@ Strategia nuova:
 
 Obiettivo: massimizzare la probabilità di ottenere i 10 prodotti richiesti
 con meno richieste simultanee e una sequenza adattiva, non con brute force.
+
+
+## V25 - discovery multistadio
+
+Quando Creators API è nel circuit breaker 403, la ricerca segue ora:
+
+1. Amazon Search desktop principale;
+2. due varianti desktop solo se servono;
+3. Amazon mobile/lightweight `/gp/aw/s`;
+4. retry controllato della prima pagina;
+5. come ultima risorsa, un indice web esterno viene usato esclusivamente
+   per scoprire URL/ASIN `amazon.it`;
+6. gli ASIN trovati esternamente vengono poi arricchiti tramite la pagina
+   prodotto Amazon: titolo, immagine principale, prezzo e social proof.
+
+La fonte finale dei dati prodotto resta quindi Amazon; la ricerca esterna
+serve soltanto a recuperare gli URL quando l'endpoint Search di Amazon è
+bloccato dal datacenter Streamlit.
+
+Altre modifiche:
+- snapshot dettaglio include ora titolo e immagine principale;
+- `#productTitle`, `#landingImage`, `data-old-hires`, dynamic image e OpenGraph
+  vengono usati per arricchire schede scoperte senza SERP;
+- target sempre 10 prodotti, fermandosi appena raggiunto.
