@@ -911,9 +911,11 @@ def render_product_card(product: dict) -> None:
 
     source = str(product.get("source") or "")
     if source == "amazon_html_detail_verified":
-        note = "Prezzo verificato sulla pagina del prodotto Amazon; può variare."
+        note = "Prezzo verificato nel blocco principale della pagina prodotto Amazon."
+    elif source == "amazon_html_detail_unverified":
+        note = "Prezzo non verificabile con certezza dalla pagina prodotto."
     elif source.startswith("amazon_html"):
-        note = "Prezzo rilevato dai risultati Amazon; può variare."
+        note = "Prezzo in attesa di verifica sulla pagina prodotto."
     else:
         note = "Prezzo verificato tramite i dati Amazon disponibili."
 

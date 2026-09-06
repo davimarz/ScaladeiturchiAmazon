@@ -604,121 +604,242 @@ def _first_valid_price(elements: list[Any]) -> float:
     return 0.0
 
 
+def _price_from_visible_parts(price_node: Any) -> float:
+    """Legge whole/fraction dal prezzo visibile (aria-hidden=true).
+
+    È utile quando Amazon ha più .a-offscreen nello stesso widget.
+    """
+    if price_node is None:
+        return 0.0
+
+    visible = price_node.select_one("[aria-hidden='true']")
+    scope = visible or price_node
+
+    whole = scope.select_one(".a-price-whole")
+    fraction = scope.select_one(".a-price-fraction")
+
+    if not whole:
+        return 0.0
+
+    whole_text = (
+        whole.get_text("", strip=True)
+        .replace(".", "")
+        .replace(",", "")
+    )
+    fraction_text = (
+        fraction.get_text("", strip=True)
+        if fraction
+        else "00"
+    )
+
+    try:
+        value = float(f"{whole_text}.{fraction_text}")
+        return value if value > 0 else 0.0
+    except ValueError:
+        return 0.0
+
+
+def _extract_price_from_primary_core(
+    soup: BeautifulSoup,
+) -> tuple[float, Optional[Any], str]:
+    """Ritorna il prezzo principale e il nodo che lo contiene.
+
+    Ordine di confidenza:
+    1. apexPriceToPay / priceToPay con data-a-color=base
+    2. qualsiasi a-price data-a-color=base nel corePrice desktop
+    3. stesso criterio nel corePrice generico/mobile
+    4. fallback legacy.
+    """
+    high_confidence_selectors = (
+        # Struttura mostrata negli screenshot dell'utente.
+        "#apex_offerDisplay_desktop #corePrice_feature_div "
+        "span.a-price.apexPriceToPay[data-a-color='base']",
+        "#apex_offerDisplay_desktop #corePrice_feature_div "
+        "span.a-price[class*='priceToPay'][data-a-color='base']",
+        "#apex_offerDisplay_desktop #corePrice_feature_div "
+        "span.a-price[data-a-color='base']:not(.a-text-price)",
+
+        "#corePrice_feature_div "
+        "span.a-price.apexPriceToPay[data-a-color='base']",
+        "#corePrice_feature_div "
+        "span.a-price[class*='priceToPay'][data-a-color='base']",
+        "#corePrice_feature_div "
+        "span.a-price[data-a-color='base']:not(.a-text-price)",
+
+        "#corePriceDisplay_desktop_feature_div "
+        "span.a-price[data-a-color='base']:not(.a-text-price)",
+        "#apex_offerDisplay_mobile "
+        "span.a-price[data-a-color='base']:not(.a-text-price)",
+        "[data-feature-name='corePrice'] "
+        "span.a-price[data-a-color='base']:not(.a-text-price)",
+    )
+
+    for selector in high_confidence_selectors:
+        for price_node in soup.select(selector):
+            # Prima usa whole/fraction VISIBILI, esattamente come nello screenshot.
+            value = _price_from_visible_parts(price_node)
+            if value > 0:
+                return value, price_node, selector
+
+            offscreen = price_node.select_one(":scope > .a-offscreen")
+            if offscreen is None:
+                offscreen = price_node.select_one(".a-offscreen")
+            if offscreen is not None:
+                value = _parse_html_price(
+                    offscreen.get_text(" ", strip=True)
+                )
+                if value > 0:
+                    return value, price_node, selector
+
+    # Fallback più debole, solo se il prezzo principale "base" non esiste.
+    fallback_selectors = (
+        "#corePrice_feature_div .priceToPay .a-offscreen",
+        "#corePrice_feature_div #price_inside_buybox",
+        "#price_inside_buybox",
+        "#priceblock_ourprice",
+        "#priceblock_dealprice",
+        "#priceblock_saleprice",
+    )
+
+    for selector in fallback_selectors:
+        element = soup.select_one(selector)
+        if element is None:
+            continue
+
+        value = _parse_html_price(element.get_text(" ", strip=True))
+        if value > 0:
+            return value, element, selector
+
+    return 0.0, None, ""
+
+
+def _extract_old_price_from_same_core(
+    soup: BeautifulSoup,
+    current_price: float,
+    current_node: Optional[Any],
+) -> Optional[float]:
+    """Trova il prezzo di riferimento nello stesso widget del prezzo corrente.
+
+    Non cerca indiscriminatamente in tutta la pagina: così prezzi di accessori,
+    rate, Subscribe & Save o altre offerte non entrano nella scheda.
+    """
+    if current_price <= 0:
+        return None
+
+    scopes: list[Any] = []
+
+    # Risali prima al corePrice che contiene esattamente il prezzo selezionato.
+    if current_node is not None:
+        parent = current_node
+        for _ in range(8):
+            if parent is None:
+                break
+            parent_id = str(parent.get("id") or "")
+            feature_name = str(parent.get("data-feature-name") or "")
+
+            if (
+                parent_id in {
+                    "corePrice_feature_div",
+                    "corePriceDisplay_desktop_feature_div",
+                }
+                or feature_name == "corePrice"
+            ):
+                scopes.append(parent)
+                break
+            parent = parent.parent
+
+    # Fallback a blocchi corePrice noti, senza uscire verso altri widget.
+    for selector in (
+        "#apex_offerDisplay_desktop #corePrice_feature_div",
+        "#corePrice_feature_div",
+        "#corePriceDisplay_desktop_feature_div",
+        "[data-feature-name='corePrice']",
+    ):
+        node = soup.select_one(selector)
+        if node is not None and node not in scopes:
+            scopes.append(node)
+
+    old_selectors = (
+        "span.a-price.a-text-price span.a-offscreen",
+        "span.a-price[data-a-strike='true'] span.a-offscreen",
+        ".basisPrice span.a-offscreen",
+        "span[data-a-strike='true'] span.a-offscreen",
+    )
+
+    candidates: list[float] = []
+
+    for scope in scopes:
+        for selector in old_selectors:
+            for element in scope.select(selector):
+                candidate = _parse_html_price(
+                    element.get_text(" ", strip=True)
+                )
+                if candidate > current_price:
+                    candidates.append(candidate)
+
+        # Amazon talvolta usa un'etichetta testuale "Prezzo consigliato".
+        for text_node in scope.find_all(
+            string=re.compile(
+                r"prezzo\s+(?:consigliato|precedente|di\s+listino)"
+                r"|list\s+price|was\s+price",
+                re.IGNORECASE,
+            )
+        ):
+            parent = text_node.parent
+            container = parent.parent if parent is not None else None
+            if container is None:
+                continue
+
+            for element in container.select(".a-price .a-offscreen"):
+                candidate = _parse_html_price(
+                    element.get_text(" ", strip=True)
+                )
+                if candidate > current_price:
+                    candidates.append(candidate)
+
+    if not candidates:
+        return None
+
+    # Il riferimento più vicino sopra il prezzo corrente è normalmente
+    # quello della stessa offerta (es. 43,00 sopra 38,78), evitando valori
+    # di altri widget molto più alti.
+    return min(candidates)
+
+
 def _extract_detail_page_prices(
     html_text: str,
 ) -> tuple[Optional[float], Optional[float], int]:
-    """Legge il prezzo dalla pagina dettaglio Amazon.
-
-    Priorità ai blocchi prezzo principali, compreso quello mostrato
-    nello screenshot dell'utente: #corePrice_feature_div.
-    """
+    """Estrae solo prezzi ad alta confidenza dalla pagina prodotto."""
     if not html_text:
         return None, None, 0
 
     soup = BeautifulSoup(html_text, "html.parser")
 
-    containers = [
-        soup.select_one("#corePrice_feature_div"),
-        soup.select_one("#corePriceDisplay_desktop_feature_div"),
-        soup.select_one("#apex_offerDisplay_desktop"),
-        soup.select_one("#apex_offerDisplay_mobile"),
-        soup.select_one("[data-feature-name='corePrice']"),
-        soup.select_one("#price"),
-    ]
-    containers = [node for node in containers if node is not None]
-
-    current_price = 0.0
-    old_price: Optional[float] = None
-
-    current_selectors = (
-        "span.a-price[data-a-color='price']:not(.a-text-price) span.a-offscreen",
-        "span.a-price[data-a-color='base']:not(.a-text-price) span.a-offscreen",
-        "span.a-price:not(.a-text-price):not([data-a-strike='true']) span.a-offscreen",
-        "span.a-price:not(.a-text-price) span.a-offscreen",
-        ".a-price .a-offscreen",
+    current_price, current_node, selector_used = _extract_price_from_primary_core(
+        soup
     )
 
-    for container in containers:
-        candidates = []
-        for selector in current_selectors:
-            candidates.extend(container.select(selector))
-        current_price = _first_valid_price(candidates)
-        if current_price > 0:
-            break
-
-    # Fallback IDs storicamente usati da Amazon.
     if current_price <= 0:
-        direct_candidates = [
-            soup.select_one("#price_inside_buybox"),
-            soup.select_one("#priceblock_ourprice"),
-            soup.select_one("#priceblock_dealprice"),
-            soup.select_one("#priceblock_saleprice"),
-            soup.select_one(".priceToPay .a-offscreen"),
-        ]
-        current_price = _first_valid_price(
-            [node for node in direct_candidates if node is not None]
-        )
+        return None, None, 0
 
-    # Ultimo fallback: whole + fraction, ma soltanto dentro i container principali.
-    if current_price <= 0:
-        for container in containers:
-            whole = container.select_one(
-                "span.a-price:not(.a-text-price) .a-price-whole"
-            )
-            fraction = container.select_one(
-                "span.a-price:not(.a-text-price) .a-price-fraction"
-            )
-            if whole:
-                whole_text = (
-                    whole.get_text("", strip=True)
-                    .replace(".", "")
-                    .replace(",", "")
-                )
-                fraction_text = (
-                    fraction.get_text("", strip=True)
-                    if fraction
-                    else "00"
-                )
-                try:
-                    candidate = float(f"{whole_text}.{fraction_text}")
-                except ValueError:
-                    candidate = 0.0
-
-                if candidate > 0:
-                    current_price = candidate
-                    break
-
-    old_selectors = (
-        "span.a-price[data-a-strike='true'] span.a-offscreen",
-        "span.a-price.a-text-price span.a-offscreen",
-        ".basisPrice span.a-offscreen",
-        "span[data-a-strike='true'] span.a-offscreen",
+    old_price = _extract_old_price_from_same_core(
+        soup,
+        current_price,
+        current_node,
     )
-
-    old_candidates = []
-    for container in containers:
-        for selector in old_selectors:
-            old_candidates.extend(container.select(selector))
-
-    # Se il prezzo barrato è fuori dal corePrice, prova comunque in pagina.
-    if not old_candidates:
-        for selector in old_selectors:
-            old_candidates.extend(soup.select(selector))
-
-    for element in old_candidates:
-        candidate = _parse_html_price(element.get_text(" ", strip=True))
-        if candidate > current_price > 0:
-            old_price = candidate
-            break
 
     discount_value = 0
-    if old_price is not None and old_price > current_price > 0:
+    if old_price is not None and old_price > current_price:
         discount_value = int(
             round(((old_price - current_price) / old_price) * 100)
         )
 
-    if current_price <= 0:
-        return None, old_price, discount_value
+    LOGGER.info(
+        "Detail price verified selector=%s current=%.2f old=%s",
+        selector_used,
+        current_price,
+        f"{old_price:.2f}" if old_price is not None else "n/a",
+    )
 
     return float(current_price), old_price, discount_value
 
@@ -746,6 +867,16 @@ def _verify_product_detail_price(
     )
 
     if final_price is None or final_price <= 0:
+        # Il prezzo della SERP può riferirsi a una variante/offerta diversa.
+        # Lo conserviamo soltanto internamente, ma non lo mostriamo come certo.
+        verified["_search_prezzo_finale"] = verified.get("prezzo_finale")
+        verified["_search_prezzo_iniziale"] = verified.get("prezzo_iniziale")
+        verified["prezzo_finale"] = None
+        verified["prezzo_iniziale"] = None
+        verified["prezzo_verificato"] = False
+        verified["sconto"] = ""
+        verified["sconto_val"] = 0
+        verified["source"] = "amazon_html_detail_unverified"
         return verified
 
     verified["prezzo_finale"] = float(final_price)

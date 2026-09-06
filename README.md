@@ -114,3 +114,22 @@ Per i prodotti recuperati dal fallback HTML:
 
 Questo evita casi in cui la pagina dei risultati mostra un prezzo relativo a
 un'altra variante/offerta rispetto alla pagina prodotto.
+
+
+## V13 - prezzo corePrice ad alta confidenza
+
+Correzione fondamentale:
+- `data-a-color="base"` / `apexPriceToPay` ha priorità assoluta;
+- viene letto prima il prezzo VISIBILE `a-price-whole` + `a-price-fraction`;
+- `data-a-color="price"` non viene più privilegiato perché può rappresentare
+  prezzi secondari/promozionali nello stesso widget;
+- il prezzo vecchio viene cercato soltanto nello stesso `corePrice`;
+- tra più riferimenti validi viene scelto il più vicino sopra il prezzo corrente;
+- se la pagina dettaglio non produce un prezzo ad alta confidenza, il prezzo
+  della pagina risultati NON viene più mostrato come prezzo verificato.
+
+Test inclusi:
+- 13,95 prevale su un prezzo secondario 27,33;
+- 38,78 prevale su un prezzo secondario 31,79;
+- prezzo vecchio corretto 43,00 prevale rispetto a 35,25, che è inferiore
+  al prezzo corrente e quindi viene escluso.
