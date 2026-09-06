@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import random
@@ -33,10 +34,10 @@ MAX_SEARCH_PAGES = 10
 SEARCH_CACHE_TTL = 10 * 60
 PRICE_CACHE_TTL = 2 * 60
 HTTP_TIMEOUT = 8
-HTML_TIMEOUT = 8
+HTML_TIMEOUT = 5
 HTML_CACHE_TTL = 180
-DETAIL_SNAPSHOT_TTL = 75
-DETAIL_PRICE_WORKERS = 4
+DETAIL_SNAPSHOT_TTL = 120
+DETAIL_PRICE_WORKERS = 8
 CREATORS_403_COOLDOWN = 60 * 60
 SEARCH_HTML_CACHE_MAX = 24
 DETAIL_SNAPSHOT_CACHE_MAX = 256
@@ -585,7 +586,8 @@ def _search_item_to_product(
     )
 
     image_url = str(
-        (((item.get("images") or {}).get("primary") or {}).get("medium") or {}).get("url")
+        (((item.get("images") or {}).get("primary") or {}).get("large") or {}).get("url")
+        or (((item.get("images") or {}).get("primary") or {}).get("medium") or {}).get("url")
         or ""
     )
 
@@ -1290,6 +1292,70 @@ def _extract_serp_prices(
 
     return float(current_price), old_price, discount_value
 
+
+def _best_serp_image_url(image: Any) -> str:
+    """Sceglie l'immagine Amazon con la risoluzione più alta disponibile."""
+    if image is None:
+        return ""
+
+    candidates: list[tuple[int, str]] = []
+
+    dynamic_raw = str(image.get("data-a-dynamic-image") or "").strip()
+    if dynamic_raw:
+        try:
+            dynamic = json.loads(dynamic_raw)
+            if isinstance(dynamic, dict):
+                for url, size in dynamic.items():
+                    if not isinstance(url, str) or not url:
+                        continue
+                    score = 0
+                    if isinstance(size, (list, tuple)) and len(size) >= 2:
+                        try:
+                            score = int(size[0]) * int(size[1])
+                        except (TypeError, ValueError):
+                            score = 0
+                    candidates.append((score, url))
+        except (ValueError, TypeError):
+            pass
+
+    srcset = str(image.get("srcset") or "").strip()
+    if srcset:
+        for part in srcset.split(","):
+            chunk = part.strip()
+            if not chunk:
+                continue
+            bits = chunk.rsplit(" ", 1)
+            url = bits[0].strip()
+            score = 0
+            if len(bits) == 2:
+                descriptor = bits[1].strip().lower()
+                try:
+                    if descriptor.endswith("w"):
+                        score = int(float(descriptor[:-1]))
+                    elif descriptor.endswith("x"):
+                        score = int(float(descriptor[:-1]) * 1000)
+                except ValueError:
+                    score = 0
+            if url:
+                candidates.append((score, url))
+
+    for attr in ("data-src", "src"):
+        url = str(image.get(attr) or "").strip()
+        if url:
+            candidates.append((1, url))
+
+    usable = [
+        (score, url)
+        for score, url in candidates
+        if "transparent-pixel" not in url.lower()
+        and "pixel" not in url.lower()
+    ]
+    if not usable:
+        return ""
+
+    usable.sort(key=lambda pair: pair[0], reverse=True)
+    return usable[0][1]
+
 def _extract_products_from_html(
     html_text: str,
     partner_tag: str,
@@ -1357,16 +1423,10 @@ def _extract_products_from_html(
         if not title or len(title) < 3:
             continue
 
-        image_url = ""
-        image = item.select_one("img.s-image, img[data-src], img")
-        if image:
-            image_url = str(
-                image.get("src")
-                or image.get("data-src")
-                or ""
-            ).strip()
-            if "transparent-pixel" in image_url or "pixel" in image_url.lower():
-                image_url = ""
+        image = item.select_one(
+            "img.s-image, img[data-a-dynamic-image], img[srcset], img[data-src], img"
+        )
+        image_url = _best_serp_image_url(image)
 
         price, old_price, discount_value = _extract_serp_prices(item)
         price = float(price or 0.0)
@@ -1892,12 +1952,17 @@ def ottieni_offerte_avanzate(
     return products[:target]
 
 
-@st.cache_data(ttl=10 * 60, show_spinner=False, max_entries=64)
+@st.cache_data(ttl=5 * 60, show_spinner=False, max_entries=96)
 def ottieni_vetrina_casuale(
     partner_tag: Optional[str] = None,
-    item_count: int = 10,
+    item_count: int = 3,
     refresh_token: Optional[str] = None,
 ) -> list[dict[str, Any]]:
+    """Vetrina veloce e resiliente.
+
+    Prova più ricerche a rotazione e si ferma appena ottiene almeno
+    un prodotto reale. Il target piccolo riduce il tempo di apertura.
+    """
     configured_tag = get_partner_tag() or str(partner_tag or "").strip()
     if not configured_tag:
         return []
@@ -1913,16 +1978,29 @@ def ottieni_vetrina_casuale(
         "offerte elettrodomestici",
         "offerte scarpe",
         "offerte zaini accessori",
+        "offerte amazon",
+        "offerte del giorno",
     )
 
-    selector = str(refresh_token or int(time.time() // (10 * 60)))
+    target = max(1, min(int(item_count or 3), 3))
+    selector = str(refresh_token or int(time.time() // (5 * 60)))
     digest = hashlib.sha256(selector.encode("utf-8")).digest()
-    keyword = keywords[int.from_bytes(digest[:4], "big") % len(keywords)]
+    start_index = int.from_bytes(digest[:4], "big") % len(keywords)
 
-    return ottieni_offerte_avanzate(
-        keyword=keyword,
-        sort_type="Quantità vendite",
-        item_count=max(1, min(int(item_count or 10), 10)),
-        _partner_tag_override=configured_tag,
-        _cache_buster=f"vetrina:{selector}",
-    )
+    attempts = min(5, len(keywords))
+
+    for offset in range(attempts):
+        keyword = keywords[(start_index + offset) % len(keywords)]
+
+        products = ottieni_offerte_avanzate(
+            keyword=keyword,
+            sort_type="Quantità vendite",
+            item_count=target,
+            _partner_tag_override=configured_tag,
+            _cache_buster=f"vetrina:{selector}:{offset}",
+        )
+
+        if products:
+            return list(products[:target])
+
+    return []

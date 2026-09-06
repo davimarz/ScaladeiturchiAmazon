@@ -354,9 +354,9 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
 }
 
 .pcm-img-box {
-    width: 160px;
-    height: 160px;
-    min-width: 160px;
+    width: 190px;
+    height: 190px;
+    min-width: 190px;
     background: #ffffff;
     border: 1px solid #bfdbfe;
     border-radius: 9px;
@@ -571,12 +571,24 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
     }
 
     .pcm-img-box {
-        width: 126px;
-        height: 126px;
-        min-width: 126px;
+        width: 100%;
+        height: 260px;
+        min-width: 100%;
+        max-width: 100%;
+        padding: 8px;
+    }
+
+    .pcm-img-box img {
+        width: 100%;
+        height: 100%;
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
     }
 
     .pcm-top {
+        flex-direction: column;
+        align-items: stretch;
         gap: 8px;
     }
 
@@ -707,7 +719,7 @@ def _perform_search(target_count: int) -> None:
     cfg = st.session_state["last_search"]
     target_count = max(10, min(int(target_count), MAX_RESULTS))
 
-    with st.spinner("Ricerca prodotti su Amazon..."):
+    with st.spinner("Ricerca rapida prodotti..."):
         results = amazon_api.ottieni_offerte_avanzate(
             keyword=cfg["keyword"],
             sort_type=cfg["sort"],
@@ -854,7 +866,7 @@ IMG_FALLBACK_SVG = (
 )
 
 
-def render_product_card(product: dict) -> None:
+def render_product_card(product: dict, eager_image: bool = False) -> None:
     title = str(product.get("titolo") or "Prodotto Amazon")
     link = str(product.get("link_affiliato") or "")
     image_url = str(product.get("immagine_url") or IMG_FALLBACK_SVG)
@@ -985,14 +997,23 @@ def render_product_card(product: dict) -> None:
         final_price if verified else None,
     )
 
+    image_loading = "eager" if eager_image else "lazy"
+    image_priority = "high" if eager_image else "auto"
+    image_html = (
+        f"<img src='{safe_image}' "
+        f"loading='{image_loading}' "
+        f"fetchpriority='{image_priority}' "
+        f"decoding='async' "
+        f"alt='{safe_title_attr}' "
+        f"onerror=\"this.onerror=null;this.src='{safe_fallback}';\">"
+    )
+
     card_html = (
         "<div class='product-card-modern'>"
         "<div class='pcm-top'>"
         "<div class='pcm-img-box'>"
-        f"<img src='{safe_image}' loading='lazy' "
-        f"alt='{safe_title_attr}' "
-        f"onerror=\"this.onerror=null;this.src='{safe_fallback}';\">"
-        "</div>"
+        + image_html
+        + "</div>"
         "<div class='pcm-details'>"
         f"<div class='pcm-title'>{safe_title}</div>"
         f"<div class='pcm-prices'>{price_html}</div>"
@@ -1166,18 +1187,22 @@ if active_tab == "vetrina":
     ):
         with st.spinner("Aggiornamento offerte Amazon..."):
             showcase = amazon_api.ottieni_vetrina_casuale(
-                item_count=10,
+                item_count=3,
                 refresh_token=current_token,
             )
 
-        st.session_state["offerte_vetrina"] = list(showcase or [])
+        new_showcase = list(showcase or [])
+        if new_showcase:
+            st.session_state["offerte_vetrina"] = new_showcase
+        # Se una singola scansione fallisce, non cancelliamo una vetrina
+        # valida già presente nella sessione.
         st.session_state["vetrina_loaded_token"] = current_token
 
     showcase = st.session_state.get("offerte_vetrina", [])
 
     if showcase:
-        for product in showcase:
-            render_product_card(product)
+        for index, product in enumerate(showcase):
+            render_product_card(product, eager_image=(index == 0))
     else:
         st.info(
             "Nessun prodotto disponibile in vetrina al momento. "
@@ -1316,8 +1341,8 @@ elif active_tab == "cerca":
             unsafe_allow_html=True,
         )
 
-        for product in results[start:end]:
-            render_product_card(product)
+        for index, product in enumerate(results[start:end]):
+            render_product_card(product, eager_image=(index == 0))
 
         st.button(
             "➕ Carica altri 10 prodotti ⬇️",

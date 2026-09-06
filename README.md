@@ -59,3 +59,26 @@ Quando Creators API risponde `403 AssociateNotEligible`, il backend:
 - non ripete chiamate Creators API per 60 minuti;
 - dopo 60 minuti prova automaticamente di nuovo;
 - appena una chiamata API torna a rispondere 200, il blocco viene azzerato.
+
+
+## V17 - velocità, vetrina resiliente e immagini grandi
+
+### Vetrina
+- massimo 3 prodotti per apertura più rapida;
+- fino a 5 keyword alternative a rotazione;
+- si ferma appena trova almeno un prodotto reale;
+- fallback generici `offerte amazon` / `offerte del giorno`;
+- se un refresh fallisce mantiene la precedente vetrina valida della sessione.
+
+### Ricerca
+- verifiche prezzo parallele: 4 -> 8;
+- timeout HTML: 8s -> 5s;
+- snapshot dettaglio: 75s -> 120s;
+- caricamento +10 incrementale invariato;
+- circuit breaker 403: 60 minuti invariato.
+
+### Immagini
+- mobile: 126x126 -> 100% x 260px, layout verticale;
+- desktop: 160x160 -> 190x190;
+- preferenza per `data-a-dynamic-image` e `srcset` ad alta risoluzione;
+- prima immagine visibile: eager loading + priorità alta.
