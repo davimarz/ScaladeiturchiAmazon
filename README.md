@@ -254,3 +254,38 @@ import html as html_lib
 ```
 
 Nessuna altra logica di ricerca è stata modificata.
+
+
+## V28 - recupero immagini e pagine dettaglio
+
+Correzioni:
+- dettaglio desktop Amazon come primo tentativo;
+- fallback dettaglio mobile `/gp/aw/d/ASIN`;
+- merge di prezzo, titolo, immagine e quantità acquistate;
+- snapshot completamente vuoto non viene più memorizzato;
+- snapshot parziale resta in cache solo 30 secondi;
+- verifiche dettaglio ridotte a 3 worker;
+- prodotti scoperti esternamente ricevono fallback immagine Amazon da ASIN;
+- il browser prova più URL immagine prima del segnaposto grafico.
+
+La verifica prezzo resta rigorosa: un prezzo non confermato dalla pagina
+prodotto non viene mostrato come prezzo certo.
+
+
+## V29 - nuove credenziali Amazon Creators API
+
+Configurazione aggiornata per il nuovo set di credenziali:
+- applicazione: `scaladeitruchi`;
+- Application ID configurabile nei Secrets;
+- Credential ID / Credential Secret letti dai nomi ufficiali del CSV Amazon;
+- Credential Version: `3.2`;
+- per versione 3.2 il codice seleziona automaticamente
+  `https://api.amazon.co.uk/auth/o2/token`;
+- Partner Tag: `eiapromo-21`.
+
+### Sicurezza
+Le credenziali reali NON sono incluse nel pacchetto GitHub.
+Usare il file separato `streamlit_secrets_new.toml` esclusivamente in:
+Streamlit Cloud -> Manage app -> Settings -> Secrets.
+
+Non caricare `streamlit_secrets_new.toml` nel repository GitHub pubblico.

@@ -49,8 +49,9 @@ HTTP_TIMEOUT = 8
 HTML_TIMEOUT = 12
 HTML_CACHE_TTL = 180
 DETAIL_SNAPSHOT_TTL = 180
-DETAIL_HTML_TIMEOUT = 7
-DETAIL_PRICE_WORKERS = 5
+DETAIL_PARTIAL_TTL = 30
+DETAIL_HTML_TIMEOUT = 8
+DETAIL_PRICE_WORKERS = 3
 EXTERNAL_DISCOVERY_TIMEOUT = 6
 EXTERNAL_DISCOVERY_MAX_PAGES = 2
 HTML_SEARCH_COOLDOWN = 10 * 60
@@ -292,13 +293,47 @@ def get_partner_tag() -> str:
     return str(_amazon_secrets().get("partner_tag", "")).strip()
 
 
+def _token_url_for_credential_version(version: str) -> str:
+    """Endpoint OAuth Amazon in base alla versione della credenziale."""
+    clean = str(version or "").strip()
+
+    if clean.startswith("3.1"):
+        return "https://api.amazon.com/auth/o2/token"
+    if clean.startswith("3.3"):
+        return "https://api.amazon.co.jp/auth/o2/token"
+
+    # 3.2 = Europa (IT inclusa). È anche il fallback sicuro del progetto.
+    return DEFAULT_EU_TOKEN_URL
+
+
 def _creators_credentials() -> tuple[str, str, str]:
     cfg = _amazon_secrets()
-    client_id = str(cfg.get("client_id") or cfg.get("credential_id") or "").strip()
-    client_secret = str(
-        cfg.get("client_secret") or cfg.get("credential_secret") or ""
+
+    # Nomi consigliati: corrispondono direttamente al CSV Creators API.
+    client_id = str(
+        cfg.get("credential_id")
+        or cfg.get("client_id")
+        or ""
     ).strip()
-    token_url = str(cfg.get("token_url") or DEFAULT_EU_TOKEN_URL).strip()
+
+    client_secret = str(
+        cfg.get("credential_secret")
+        or cfg.get("client_secret")
+        or ""
+    ).strip()
+
+    credential_version = str(
+        cfg.get("credential_version")
+        or cfg.get("version")
+        or ""
+    ).strip()
+
+    configured_token_url = str(cfg.get("token_url") or "").strip()
+    token_url = (
+        configured_token_url
+        or _token_url_for_credential_version(credential_version)
+    )
+
     return client_id, client_secret, token_url
 
 
@@ -1001,6 +1036,46 @@ def _extract_detail_page_prices(
 
 
 
+
+def _asin_image_fallbacks(asin: str) -> tuple[str, ...]:
+    """URL immagini Amazon da usare soltanto come fallback visuale."""
+    clean = str(asin or "").strip().upper()
+    if len(clean) != 10:
+        return ()
+
+    return (
+        f"https://images-na.ssl-images-amazon.com/images/P/{clean}.01.LZZZZZZZ.jpg",
+        f"https://images-na.ssl-images-amazon.com/images/P/{clean}.09.LZZZZZZZ.jpg",
+        f"https://images-na.ssl-images-amazon.com/images/P/{clean}.jpg",
+    )
+
+
+def _ensure_product_image_fallbacks(
+    product: dict[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(product)
+
+    asin = str(enriched.get("asin") or "").strip().upper()
+    fallbacks = list(_asin_image_fallbacks(asin))
+    current = str(enriched.get("immagine_url") or "").strip()
+
+    if not current and fallbacks:
+        current = fallbacks.pop(0)
+        enriched["immagine_url"] = current
+
+    existing = enriched.get("immagine_fallback_urls") or []
+    if isinstance(existing, str):
+        existing = [existing]
+
+    merged: list[str] = []
+    for url in [*existing, *fallbacks]:
+        clean_url = str(url or "").strip()
+        if clean_url and clean_url != current and clean_url not in merged:
+            merged.append(clean_url)
+
+    enriched["immagine_fallback_urls"] = merged
+    return enriched
+
 def _extract_detail_identity_from_soup(
     soup: BeautifulSoup,
 ) -> tuple[str, str]:
@@ -1069,6 +1144,119 @@ def _extract_detail_snapshot(
     )
 
 
+
+def _detail_snapshot_has_any_data(
+    snapshot: tuple[
+        Optional[float],
+        Optional[float],
+        int,
+        Optional[int],
+        str,
+        str,
+        str,
+    ],
+) -> bool:
+    (
+        final_price,
+        old_price,
+        discount_value,
+        sold_qty,
+        sold_label,
+        detail_title,
+        detail_image,
+    ) = snapshot
+
+    return bool(
+        (final_price is not None and final_price > 0)
+        or (old_price is not None and old_price > 0)
+        or discount_value
+        or sold_qty
+        or sold_label
+        or detail_title
+        or detail_image
+    )
+
+
+def _detail_snapshot_is_complete(
+    snapshot: tuple[
+        Optional[float],
+        Optional[float],
+        int,
+        Optional[int],
+        str,
+        str,
+        str,
+    ],
+) -> bool:
+    final_price, _, _, _, _, detail_title, detail_image = snapshot
+    return bool(
+        final_price is not None
+        and final_price > 0
+        and detail_title
+        and detail_image
+    )
+
+
+def _merge_detail_snapshots(
+    primary: tuple[
+        Optional[float],
+        Optional[float],
+        int,
+        Optional[int],
+        str,
+        str,
+        str,
+    ],
+    secondary: tuple[
+        Optional[float],
+        Optional[float],
+        int,
+        Optional[int],
+        str,
+        str,
+        str,
+    ],
+) -> tuple[
+    Optional[float],
+    Optional[float],
+    int,
+    Optional[int],
+    str,
+    str,
+    str,
+]:
+    p_final, p_old, p_discount, p_sold, p_label, p_title, p_image = primary
+    s_final, s_old, s_discount, s_sold, s_label, s_title, s_image = secondary
+
+    final_price = p_final if p_final is not None and p_final > 0 else s_final
+
+    if p_final is not None and p_final > 0:
+        old_price = p_old
+        discount = p_discount
+    else:
+        old_price = s_old
+        discount = s_discount
+
+    sold_qty = p_sold if p_sold is not None else s_sold
+    sold_label = p_label or s_label
+    detail_title = p_title or s_title
+    detail_image = p_image or s_image
+
+    return (
+        final_price,
+        old_price,
+        int(discount or 0),
+        sold_qty,
+        sold_label,
+        detail_title,
+        detail_image,
+    )
+
+
+def _asin_from_detail_url(detail_url: str) -> str:
+    match = RE_ASIN.search(str(detail_url or ""))
+    return match.group(1).upper() if match else ""
+
 def _get_detail_snapshot_cached(
     detail_url: str,
 ) -> tuple[
@@ -1086,21 +1274,59 @@ def _get_detail_snapshot_cached(
         cached = _DETAIL_SNAPSHOT_CACHE.get(detail_url)
         if cached:
             cached_at, snapshot = cached
-            if now - cached_at < DETAIL_SNAPSHOT_TTL:
+            ttl = (
+                DETAIL_SNAPSHOT_TTL
+                if _detail_snapshot_is_complete(snapshot)
+                else DETAIL_PARTIAL_TTL
+            )
+            if now - cached_at < ttl:
                 return snapshot
             _DETAIL_SNAPSHOT_CACHE.pop(detail_url, None)
 
-    html_text = _fetch_amazon_html(detail_url, timeout=DETAIL_HTML_TIMEOUT)
-    snapshot = _extract_detail_snapshot(html_text or "")
+    desktop_html = _fetch_amazon_html(
+        detail_url,
+        timeout=DETAIL_HTML_TIMEOUT,
+    )
+    desktop_snapshot = _extract_detail_snapshot(desktop_html or "")
+    snapshot = desktop_snapshot
 
-    with _CACHE_LOCK:
-        _DETAIL_SNAPSHOT_CACHE[detail_url] = (now, snapshot)
-        if len(_DETAIL_SNAPSHOT_CACHE) > DETAIL_SNAPSHOT_CACHE_MAX:
-            oldest = sorted(
-                _DETAIL_SNAPSHOT_CACHE.items(), key=lambda pair: pair[1][0]
-            )
-            for key, _ in oldest[: len(_DETAIL_SNAPSHOT_CACHE) - DETAIL_SNAPSHOT_CACHE_MAX]:
-                _DETAIL_SNAPSHOT_CACHE.pop(key, None)
+    asin = _asin_from_detail_url(detail_url)
+
+    if asin and not _detail_snapshot_is_complete(snapshot):
+        mobile_url = f"https://www.amazon.it/gp/aw/d/{asin}?psc=1"
+
+        mobile_html = _fetch_amazon_html(
+            mobile_url,
+            timeout=DETAIL_HTML_TIMEOUT,
+        )
+        mobile_snapshot = _extract_detail_snapshot(mobile_html or "")
+        snapshot = _merge_detail_snapshots(
+            desktop_snapshot,
+            mobile_snapshot,
+        )
+
+        LOGGER.info(
+            "Detail recovery asin=%s desktop_any=%s mobile_any=%s complete=%s",
+            asin,
+            _detail_snapshot_has_any_data(desktop_snapshot),
+            _detail_snapshot_has_any_data(mobile_snapshot),
+            _detail_snapshot_is_complete(snapshot),
+        )
+
+    # Un fallimento totale non va in cache: la ricerca successiva deve poter
+    # riprovare subito, invece di restare vuota per diversi minuti.
+    if _detail_snapshot_has_any_data(snapshot):
+        with _CACHE_LOCK:
+            _DETAIL_SNAPSHOT_CACHE[detail_url] = (now, snapshot)
+
+            if len(_DETAIL_SNAPSHOT_CACHE) > DETAIL_SNAPSHOT_CACHE_MAX:
+                oldest = sorted(
+                    _DETAIL_SNAPSHOT_CACHE.items(),
+                    key=lambda pair: pair[1][0],
+                )
+                excess = len(_DETAIL_SNAPSHOT_CACHE) - DETAIL_SNAPSHOT_CACHE_MAX
+                for key, _ in oldest[:excess]:
+                    _DETAIL_SNAPSHOT_CACHE.pop(key, None)
 
     return snapshot
 
@@ -1109,7 +1335,7 @@ def _verify_product_detail_price(
     product: dict[str, Any],
 ) -> dict[str, Any]:
     """Verifica il prezzo sulla pagina prodotto con cache compatta."""
-    verified = dict(product)
+    verified = _ensure_product_image_fallbacks(product)
 
     asin = str(verified.get("asin") or "").strip().upper()
     if len(asin) != 10:
@@ -1132,7 +1358,17 @@ def _verify_product_detail_price(
     if detail_title:
         verified["titolo"] = detail_title
     if detail_image:
+        previous_image = str(verified.get("immagine_url") or "").strip()
+        fallback_urls = list(verified.get("immagine_fallback_urls") or [])
+
+        if previous_image and previous_image != detail_image:
+            fallback_urls.insert(0, previous_image)
+
         verified["immagine_url"] = detail_image
+        verified["immagine_fallback_urls"] = list(dict.fromkeys(
+            url for url in fallback_urls
+            if url and url != detail_image
+        ))
 
     if final_price is None or final_price <= 0:
         verified["_search_prezzo_finale"] = verified.get("prezzo_finale")
@@ -2125,10 +2361,14 @@ def _parse_external_engine_products(
         detail_page_url = _normalize_product_detail_url(amazon_url, asin)
         if len(title) < 3:
             title = f"Prodotto Amazon {asin}"
+        image_candidates = _asin_image_fallbacks(asin)
+        primary_image = image_candidates[0] if image_candidates else ""
+
         found.append({
             "asin": asin,
             "titolo": title,
-            "immagine_url": "",
+            "immagine_url": primary_image,
+            "immagine_fallback_urls": list(image_candidates[1:]),
             "prezzo_iniziale": None,
             "prezzo_finale": None,
             "prezzo_verificato": False,

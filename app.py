@@ -954,10 +954,42 @@ IMG_FALLBACK_SVG = (
 )
 
 
+
+def _card_image_candidates(product: dict) -> list[str]:
+    candidates: list[str] = []
+
+    primary = str(product.get("immagine_url") or "").strip()
+    if primary:
+        candidates.append(primary)
+
+    extra = product.get("immagine_fallback_urls") or []
+    if isinstance(extra, str):
+        extra = [extra]
+
+    for url in extra:
+        clean = str(url or "").strip()
+        if clean and clean not in candidates:
+            candidates.append(clean)
+
+    asin = str(product.get("asin") or "").strip().upper()
+    if len(asin) == 10:
+        legacy = (
+            f"https://images-na.ssl-images-amazon.com/images/P/{asin}.01.LZZZZZZZ.jpg",
+            f"https://images-na.ssl-images-amazon.com/images/P/{asin}.09.LZZZZZZZ.jpg",
+            f"https://images-na.ssl-images-amazon.com/images/P/{asin}.jpg",
+        )
+        for url in legacy:
+            if url not in candidates:
+                candidates.append(url)
+
+    return candidates
+
 def render_product_card(product: dict, eager_image: bool = False) -> None:
     title = str(product.get("titolo") or "Prodotto Amazon")
     link = str(product.get("link_affiliato") or "")
-    image_url = str(product.get("immagine_url") or IMG_FALLBACK_SVG)
+    image_candidates = _card_image_candidates(product)
+    image_url = image_candidates[0] if image_candidates else IMG_FALLBACK_SVG
+    image_fallback_candidates = image_candidates[1:]
 
     safe_title = html.escape(title)
     safe_title_attr = html.escape(title, quote=True)
@@ -1087,13 +1119,37 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
 
     image_loading = "eager" if eager_image else "lazy"
     image_priority = "high" if eager_image else "auto"
+
+    safe_image_fallbacks = [
+        html.escape(url, quote=True)
+        for url in image_fallback_candidates
+    ]
+
+    fallback_js_parts = []
+    for index, fallback_url in enumerate(safe_image_fallbacks):
+        condition = "if" if index == 0 else "else if"
+        fallback_js_parts.append(
+            f"{condition}(this.dataset.imgfb!='{index + 1}')"
+            "{"
+            f"this.dataset.imgfb='{index + 1}';"
+            f"this.src='{fallback_url}';"
+            "return;"
+            "}"
+        )
+
+    fallback_js_parts.append(
+        "this.onerror=null;"
+        f"this.src='{safe_fallback}';"
+    )
+    image_onerror = "".join(fallback_js_parts)
+
     image_html = (
         f"<img src='{safe_image}' "
         f"loading='{image_loading}' "
         f"fetchpriority='{image_priority}' "
         f"decoding='async' "
         f"alt='{safe_title_attr}' "
-        f"onerror=\"this.onerror=null;this.src='{safe_fallback}';\">"
+        f"onerror=\"{image_onerror}\">"
     )
 
     card_html = (
