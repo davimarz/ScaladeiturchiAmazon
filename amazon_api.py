@@ -35,10 +35,11 @@ MAX_SEARCH_PAGES = 10
 SEARCH_CACHE_TTL = 10 * 60
 PRICE_CACHE_TTL = 2 * 60
 HTTP_TIMEOUT = 8
-HTML_TIMEOUT = 10
+HTML_TIMEOUT = 12
 HTML_CACHE_TTL = 180
-DETAIL_SNAPSHOT_TTL = 120
-DETAIL_PRICE_WORKERS = 8
+DETAIL_SNAPSHOT_TTL = 180
+DETAIL_HTML_TIMEOUT = 7
+DETAIL_PRICE_WORKERS = 5
 CREATORS_403_COOLDOWN = 60 * 60
 SEARCH_HTML_CACHE_MAX = 24
 DETAIL_SNAPSHOT_CACHE_MAX = 256
@@ -960,7 +961,7 @@ def _get_detail_snapshot_cached(
                 return snapshot
             _DETAIL_SNAPSHOT_CACHE.pop(detail_url, None)
 
-    html_text = _fetch_amazon_html(detail_url)
+    html_text = _fetch_amazon_html(detail_url, timeout=DETAIL_HTML_TIMEOUT)
     snapshot = _extract_detail_snapshot(html_text or "")
 
     with _CACHE_LOCK:
@@ -1152,8 +1153,10 @@ def _html_has_search_product_signals(text: str) -> bool:
     )
 
 
-def _fetch_amazon_html(url: str) -> Optional[str]:
+def _fetch_amazon_html(url: str, timeout: Optional[int] = None) -> Optional[str]:
     """Scarica HTML Amazon con fallback adattivo e diagnostica essenziale."""
+    request_timeout = max(3, int(timeout or HTML_TIMEOUT))
+
     headers = {
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.7,en;q=0.6",
         "Accept": (
@@ -1172,7 +1175,7 @@ def _fetch_amazon_html(url: str) -> Optional[str]:
             response = c_requests.get(
                 url,
                 impersonate="chrome",
-                timeout=HTML_TIMEOUT,
+                timeout=request_timeout,
                 headers=headers,
                 cookies=cookies,
                 allow_redirects=True,
@@ -1207,7 +1210,7 @@ def _fetch_amazon_html(url: str) -> Optional[str]:
                     safari_response = c_requests.get(
                         url,
                         impersonate="safari",
-                        timeout=HTML_TIMEOUT,
+                        timeout=request_timeout,
                         headers=headers,
                         cookies=cookies,
                         allow_redirects=True,
@@ -1245,7 +1248,7 @@ def _fetch_amazon_html(url: str) -> Optional[str]:
             url,
             headers=headers,
             cookies=cookies,
-            timeout=HTML_TIMEOUT,
+            timeout=request_timeout,
             allow_redirects=True,
         )
 
@@ -1754,22 +1757,25 @@ def _amazon_search_urls(keyword: str, page: int) -> tuple[str, ...]:
     return tuple(dict.fromkeys(variants))
 
 
-def _fetch_search_html_variants(
+def _fetch_search_html_urls(
+    urls: tuple[str, ...],
     keyword: str,
     page: int,
+    stage: str,
 ) -> list[str]:
-    """Scarica in parallelo le varianti della stessa ricerca Amazon."""
-    urls = _amazon_search_urls(keyword, page)
-    html_pages: list[str] = []
+    """Scarica un piccolo gruppo di URL equivalenti in parallelo."""
+    if not urls:
+        return []
 
-    workers = min(3, len(urls))
+    workers = min(2, len(urls))
+    ordered: dict[int, str] = {}
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(_get_amazon_html_cached, url): index
             for index, url in enumerate(urls)
         }
 
-        ordered: dict[int, str] = {}
         for future in as_completed(futures):
             index = futures[future]
             try:
@@ -1780,21 +1786,19 @@ def _fetch_search_html_variants(
             if html_text:
                 ordered[index] = html_text
 
-    lengths = [len(ordered[index]) for index in sorted(ordered)]
+    pages = [ordered[index] for index in sorted(ordered)]
 
     LOGGER.info(
-        "HTML search fetch keyword=%r page=%s variants_ok=%s/%s lengths=%s",
+        "HTML search stage=%s keyword=%r page=%s ok=%s/%s lengths=%s",
+        stage,
         keyword,
         page,
-        len(ordered),
+        len(pages),
         len(urls),
-        lengths,
+        [len(text) for text in pages],
     )
 
-    for index in sorted(ordered):
-        html_pages.append(ordered[index])
-
-    return html_pages
+    return pages
 
 
 def _extract_products_from_html(
@@ -1907,7 +1911,8 @@ def _search_html_fallback(
     cache_buster: str = "",
     exclude_asins: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], ...]:
-    # cache_buster consente alla Vetrina di ottenere un set nuovo quando richiesto.
+    # cache_buster serve alla Vetrina; la ricerca normale usa cache HTML
+    # soltanto per risposte valide, mai per fallimenti.
     del cache_buster
 
     clean_keyword = " ".join(str(keyword or "").strip().split())
@@ -1930,99 +1935,162 @@ def _search_html_fallback(
     diagnostic_signal_pages = 0
     diagnostic_products_parsed = 0
 
-    collected: list[dict[str, Any]] = []
-    excluded = {str(asin).strip().upper() for asin in exclude_asins if asin}
+    excluded = {
+        str(asin).strip().upper()
+        for asin in exclude_asins
+        if str(asin).strip()
+    }
     seen: set[str] = set(excluded)
+    discovered: list[dict[str, Any]] = []
 
-    # Una pagina Amazon contiene in genere più di 10 risultati.
-    # Si limita il numero di fetch per non sovraccaricare né Amazon né Streamlit.
+    # Per 10 nuovi prodotti bastano normalmente 1-2 pagine.
+    # Consentiamo fino a 3 pagine per recuperare markup incompleto,
+    # duplicati e prodotti esclusi, senza martellare Amazon.
     max_pages = min(
-        6,
-        max(2, math.ceil(target / 12) + 2),
+        5,
+        max(3, math.ceil(target / 10) + 1),
     )
 
-    for page in range(1, max_pages + 1):
-        # Amazon può restituire markup differente per URL equivalenti.
-        # Scarichiamo tre varianti in parallelo e uniamo gli ASIN trovati.
-        html_pages = _fetch_search_html_variants(
-            clean_keyword,
-            page,
+    def merge_html_page(
+        html_text: str,
+        page_number: int,
+        page_seen: set[str],
+    ) -> int:
+        nonlocal diagnostic_signal_pages
+        nonlocal diagnostic_products_parsed
+
+        if not _html_has_search_product_signals(html_text):
+            LOGGER.info(
+                "HTML search skipped no-signals keyword=%r page=%s len=%s",
+                clean_keyword,
+                page_number,
+                len(html_text or ""),
+            )
+            return 0
+
+        diagnostic_signal_pages += 1
+
+        parsed = _extract_products_from_html(
+            html_text,
+            partner_tag=partner_tag,
+            min_price=min_price,
+            max_price=max_price,
+            require_prime=require_prime,
         )
+        diagnostic_products_parsed += len(parsed)
 
-        diagnostic_pages_attempted += 1
-        diagnostic_html_received += len(html_pages)
+        added = 0
 
-        page_products: list[dict[str, Any]] = []
-        page_merge_seen: set[str] = set()
+        for page_index, product in enumerate(parsed):
+            asin = str(product.get("asin") or "").strip().upper()
 
-        for html_text in html_pages:
-            # Sanity check rapido ma compatibile col fallback V22 basato su /dp/.
-            if not _html_has_search_product_signals(html_text):
-                LOGGER.info(
-                    "HTML search page skipped: no product signals keyword=%r page=%s len=%s",
-                    clean_keyword,
-                    page,
-                    len(html_text or ""),
-                )
+            if (
+                len(asin) != 10
+                or asin in seen
+                or asin in page_seen
+            ):
                 continue
 
-            diagnostic_signal_pages += 1
+            page_seen.add(asin)
+            seen.add(asin)
 
-            parsed = _extract_products_from_html(
-                html_text,
-                partner_tag=partner_tag,
-                min_price=min_price,
-                max_price=max_price,
-                require_prime=require_prime,
+            product.setdefault(
+                "_amazon_position",
+                (page_number - 1) * 100 + page_index,
             )
 
-            diagnostic_products_parsed += len(parsed)
+            discovered.append(product)
+            added += 1
 
-            for product in parsed:
-                asin = str(product.get("asin") or "").strip().upper()
-                if len(asin) != 10 or asin in page_merge_seen:
-                    continue
-                page_merge_seen.add(asin)
-                page_products.append(product)
+            if len(discovered) >= target:
+                break
 
-            # Per la ricerca iniziale 10 risultati sono sufficienti:
-            # non serve elaborare altro markup equivalente.
-            if len(page_products) >= max(10, target):
+        return added
+
+    for page in range(1, max_pages + 1):
+        if len(discovered) >= target:
+            break
+
+        diagnostic_pages_attempted += 1
+        urls = _amazon_search_urls(clean_keyword, page)
+        page_seen: set[str] = set()
+
+        # ------------------------------------------------------------
+        # FASE A: una sola URL principale.
+        # Nel caso normale questa è l'unica richiesta SERP necessaria.
+        # ------------------------------------------------------------
+        primary_html = _get_amazon_html_cached(urls[0])
+
+        if primary_html:
+            diagnostic_html_received += 1
+            merge_html_page(primary_html, page, page_seen)
+
+        if len(discovered) >= target:
+            break
+
+        # ------------------------------------------------------------
+        # FASE B: solo se servono ancora prodotti, prova le due forme
+        # alternative in parallelo.
+        # ------------------------------------------------------------
+        alternate_pages = _fetch_search_html_urls(
+            tuple(urls[1:]),
+            keyword=clean_keyword,
+            page=page,
+            stage="alternates",
+        )
+
+        diagnostic_html_received += len(alternate_pages)
+
+        for html_text in alternate_pages:
+            merge_html_page(html_text, page, page_seen)
+            if len(discovered) >= target:
+                break
+
+        if len(discovered) >= target:
+            break
+
+        # ------------------------------------------------------------
+        # FASE C: se la PRIMA pagina non ha prodotto alcun segnale utile,
+        # un solo retry controllato dopo breve pausa.
+        # Fallimenti non vengono cacheati, quindi questo è un fetch reale.
+        # ------------------------------------------------------------
+        if (
+            page == 1
+            and not discovered
+            and diagnostic_signal_pages == 0
+        ):
+            time.sleep(0.8)
+
+            retry_html = _get_amazon_html_cached(urls[0])
+            if retry_html:
+                diagnostic_html_received += 1
+                merge_html_page(retry_html, page, page_seen)
+
+            # Se anche primary + alternate + retry non contengono alcun
+            # prodotto, cambiare pagina difficilmente supera un blocco IP.
+            if not discovered and diagnostic_signal_pages == 0:
+                LOGGER.info(
+                    "HTML search stop early keyword=%r: no product signals after recovery",
+                    clean_keyword,
+                )
                 break
 
         LOGGER.info(
-            "HTML fallback query=%r page=%s html_variants=%s prodotti=%s",
+            "HTML discovery keyword=%r page=%s total_discovered=%s target=%s",
             clean_keyword,
             page,
-            len(html_pages),
-            len(page_products),
+            len(discovered),
+            target,
         )
 
-        # Prima eliminiamo ASIN già caricati; così "Carica altri 10" non
-        # riapre le pagine dettaglio dei prodotti già presenti nella sessione.
-        candidates: list[dict[str, Any]] = []
-        page_seen: set[str] = set()
-        for page_index, product in enumerate(page_products):
-            asin = str(product.get("asin") or "").strip().upper()
-            if len(asin) != 10 or asin in seen or asin in page_seen:
-                continue
-            page_seen.add(asin)
-            product.setdefault("_amazon_position", (page - 1) * 100 + page_index)
-            candidates.append(product)
+    # -----------------------------------------------------------------
+    # SECONDA FASE: la verifica prezzo non blocca più la discovery.
+    # A questo punto abbiamo già trovato fino a 10 ASIN reali.
+    # -----------------------------------------------------------------
+    collected = list(discovered[:target])
 
-        remaining = max(0, target - len(collected))
-        if remaining > 0 and candidates:
-            candidates = _verify_products_detail_prices(candidates[:remaining])
-
-        for product in candidates:
-            asin = str(product.get("asin") or "").strip().upper()
-            if len(asin) != 10 or asin in seen:
-                continue
-            seen.add(asin)
-            collected.append(product)
-
-        if len(collected) >= target:
-            break
+    if collected:
+        collected = _verify_products_detail_prices(collected)
 
     if collected:
         diagnostic_reason = "ok"
@@ -2049,6 +2117,7 @@ def _search_html_fallback(
             key=lambda product: (
                 product.get("prezzo_finale") is None,
                 float(product.get("prezzo_finale") or float("inf")),
+                int(product.get("_amazon_position") or 0),
             )
         )
     elif sort_type == "Quantità vendite":
@@ -2061,6 +2130,7 @@ def _search_html_fallback(
         )
 
     return tuple(collected[:target])
+
 
 def _passes_local_filters(
     product: dict[str, Any],

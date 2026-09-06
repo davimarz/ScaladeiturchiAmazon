@@ -174,3 +174,25 @@ Integrazione ragionata dei suggerimenti Base44:
 - messaggio utente differenziato e senza mostrare 403 o dettagli tecnici.
 
 La logica di verifica prezzi corePrice/apexPriceToPay non è stata modificata.
+
+
+## V24 - ricerca adattiva orientata a 10 prodotti
+
+Strategia nuova:
+
+1. Creators API resta prima scelta, con circuit breaker 403 a 60 minuti.
+2. Nel fallback HTML viene richiesta prima una sola URL principale.
+3. Se quella URL produce già 10 ASIN unici, non vengono fatte altre richieste SERP.
+4. Solo se mancano prodotti vengono scaricate due URL alternative in parallelo.
+5. Se la prima pagina non contiene alcun segnale prodotto, viene fatto un solo
+   retry controllato dopo 0,8 secondi.
+6. Se anche il recovery non vede prodotti, la scansione si ferma invece di
+   martellare inutilmente pagine 2/3/4 dello stesso IP bloccato.
+7. La discovery raccoglie prima fino a 10 prodotti reali.
+8. Solo dopo vengono verificate le pagine dettaglio/prezzi.
+9. Le verifiche dettaglio usano massimo 5 worker e timeout 7 secondi, per
+   ridurre il rischio di anti-bot rispetto a 8 richieste simultanee.
+10. La SERP ha timeout 12 secondi per tollerare latenza Streamlit Cloud.
+
+Obiettivo: massimizzare la probabilità di ottenere i 10 prodotti richiesti
+con meno richieste simultanee e una sequenza adattiva, non con brute force.

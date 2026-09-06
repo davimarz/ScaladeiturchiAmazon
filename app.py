@@ -782,7 +782,7 @@ def _perform_search(target_count: int) -> None:
     cfg = st.session_state["last_search"]
     target_count = max(10, min(int(target_count), MAX_RESULTS))
 
-    with st.spinner("Ricerca rapida prodotti..."):
+    with st.spinner(f"Ricerca di {target_count} prodotti..."):
         results = amazon_api.ottieni_offerte_avanzate(
             keyword=cfg["keyword"],
             sort_type=cfg["sort"],
