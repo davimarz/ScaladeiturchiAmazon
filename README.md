@@ -220,3 +220,22 @@ Altre modifiche:
 - `#productTitle`, `#landingImage`, `data-old-hires`, dynamic image e OpenGraph
   vengono usati per arricchire schede scoperte senza SERP;
 - target sempre 10 prodotti, fermandosi appena raggiunto.
+
+
+## V26 - ricerca resiliente a 503 / challenge Streamlit
+
+Basata sui log reali del 2026-09-06:
+- Amazon Search restituiva HTTP 503 con body ~2 KB;
+- alcune risposte HTTP 200 erano shell da ~2.3 KB senza link prodotto;
+- DuckDuckGo andava in ConnectTimeout.
+
+Modifiche:
+- le pagine Search 200 senza segnali `/dp/`, `data-asin`, ecc. non vengono più cacheate;
+- dopo 2 fallimenti Search consecutivi si apre un circuit breaker HTML di 10 minuti;
+- mentre il breaker è aperto si saltano desktop/mobile Amazon Search e si passa subito al discovery esterno;
+- discovery esterno parallelo: Bing RSS + Google HTML + DuckDuckGo HTML;
+- timeout esterno 6 secondi: i tre provider vengono interrogati insieme, non in sequenza;
+- parser dei redirect Google/DDG/Bing verso URL `amazon.it`;
+- vengono accettati solo ASIN reali estratti da URL Amazon;
+- le pagine prodotto Amazon continuano ad arricchire titolo, immagine e prezzo;
+- Creators API circuit breaker resta a 60 minuti.

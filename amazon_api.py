@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -8,6 +9,7 @@ import random
 import re
 import threading
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 from urllib.parse import (
@@ -48,8 +50,10 @@ HTML_CACHE_TTL = 180
 DETAIL_SNAPSHOT_TTL = 180
 DETAIL_HTML_TIMEOUT = 7
 DETAIL_PRICE_WORKERS = 5
-EXTERNAL_DISCOVERY_TIMEOUT = 8
+EXTERNAL_DISCOVERY_TIMEOUT = 6
 EXTERNAL_DISCOVERY_MAX_PAGES = 2
+HTML_SEARCH_COOLDOWN = 10 * 60
+HTML_SEARCH_FAILURE_THRESHOLD = 2
 CREATORS_403_COOLDOWN = 60 * 60
 SEARCH_HTML_CACHE_MAX = 24
 DETAIL_SNAPSHOT_CACHE_MAX = 256
@@ -93,6 +97,9 @@ _CACHE_LOCK = threading.RLock()
 _HTTP_LOCAL = threading.local()
 _CREATORS_BLOCK_LOCK = threading.Lock()
 _CREATORS_BLOCKED_UNTIL = 0.0
+_HTML_SEARCH_BLOCK_LOCK = threading.Lock()
+_HTML_SEARCH_BLOCKED_UNTIL = 0.0
+_HTML_SEARCH_CONSECUTIVE_FAILURES = 0
 _SEARCH_DIAGNOSTICS_LOCK = threading.Lock()
 _LAST_SEARCH_DIAGNOSTICS: dict[str, Any] = {
     "keyword": "",
@@ -101,6 +108,8 @@ _LAST_SEARCH_DIAGNOSTICS: dict[str, Any] = {
     "html_variants_received": 0,
     "html_variants_with_product_signals": 0,
     "products_parsed": 0,
+    "external_sources_ok": 0,
+    "external_products": 0,
 }
 
 USER_AGENTS = (
@@ -143,6 +152,39 @@ _LAST_API_STATUS: dict[str, Any] = {
 }
 
 
+
+
+def _is_amazon_search_url(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or ""))
+        path = parsed.path or ""
+        return path == "/s" or path.startswith("/gp/aw/s")
+    except Exception:
+        return False
+
+
+def html_search_circuit_open() -> bool:
+    """Evita richieste SERP ripetute quando Amazon blocca l'IP Streamlit."""
+    with _HTML_SEARCH_BLOCK_LOCK:
+        return time.time() < _HTML_SEARCH_BLOCKED_UNTIL
+
+
+def _record_html_search_failure() -> None:
+    global _HTML_SEARCH_CONSECUTIVE_FAILURES, _HTML_SEARCH_BLOCKED_UNTIL
+    with _HTML_SEARCH_BLOCK_LOCK:
+        _HTML_SEARCH_CONSECUTIVE_FAILURES += 1
+        if _HTML_SEARCH_CONSECUTIVE_FAILURES >= HTML_SEARCH_FAILURE_THRESHOLD:
+            _HTML_SEARCH_BLOCKED_UNTIL = max(
+                _HTML_SEARCH_BLOCKED_UNTIL,
+                time.time() + HTML_SEARCH_COOLDOWN,
+            )
+
+
+def _record_html_search_success() -> None:
+    global _HTML_SEARCH_CONSECUTIVE_FAILURES, _HTML_SEARCH_BLOCKED_UNTIL
+    with _HTML_SEARCH_BLOCK_LOCK:
+        _HTML_SEARCH_CONSECUTIVE_FAILURES = 0
+        _HTML_SEARCH_BLOCKED_UNTIL = 0.0
 
 def creators_circuit_open() -> bool:
     """Indica se il circuit breaker Creators API è attualmente aperto."""
@@ -1374,20 +1416,43 @@ def _fetch_amazon_html(url: str, timeout: Optional[int] = None) -> Optional[str]
 
 
 def _get_amazon_html_cached(url: str) -> Optional[str]:
-    """Cache breve solo per pagine di ricerca Amazon."""
+    """Cache solo risposte Amazon realmente utili.
+
+    Le SERP 200 ma prive di segnali prodotto non vengono cacheate: nei log
+    dell'app corrispondono alle piccole pagine shell/challenge da 2-4 KB.
+    """
     now = time.time()
+    is_search = _is_amazon_search_url(url)
+
+    if is_search and html_search_circuit_open():
+        return None
 
     with _CACHE_LOCK:
         cached = _HTML_CACHE.get(url)
         if cached:
             cached_at, html_text = cached
             if now - cached_at < HTML_CACHE_TTL and html_text:
-                return html_text
+                if not is_search or _html_has_search_product_signals(html_text):
+                    return html_text
             _HTML_CACHE.pop(url, None)
 
     html_text = _fetch_amazon_html(url)
     if not html_text:
+        if is_search:
+            _record_html_search_failure()
         return None
+
+    if is_search and not _html_has_search_product_signals(html_text):
+        LOGGER.info(
+            "HTML search response rejected before cache len=%s url_path=%s",
+            len(html_text or ""),
+            urlparse(url).path,
+        )
+        _record_html_search_failure()
+        return None
+
+    if is_search:
+        _record_html_search_success()
 
     with _CACHE_LOCK:
         _HTML_CACHE[url] = (now, html_text)
@@ -1397,7 +1462,6 @@ def _get_amazon_html_cached(url: str) -> Optional[str]:
                 _HTML_CACHE.pop(key, None)
 
     return html_text
-
 
 
 def _parse_compact_quantity(raw: str) -> Optional[int]:
@@ -1918,10 +1982,14 @@ def _fetch_search_html_urls(
 
 
 def _external_amazon_url(href: str) -> str:
-    """Estrae un URL amazon.it diretto anche dai redirect DuckDuckGo."""
+    """Estrae un URL amazon.it diretto dai redirect di vari motori."""
     raw = html_lib.unescape(str(href or "").strip())
     if not raw:
         return ""
+
+    # Link relativi Google (/url?q=...).
+    if raw.startswith("/url?"):
+        raw = "https://www.google.com" + raw
 
     try:
         parsed = urlparse(raw)
@@ -1933,44 +2001,154 @@ def _external_amazon_url(href: str) -> str:
     if host in {"amazon.it", "www.amazon.it"}:
         return raw
 
+    params = parse_qs(parsed.query)
+
     if "duckduckgo.com" in host:
-        params = parse_qs(parsed.query)
         target = str((params.get("uddg") or [""])[0]).strip()
         if target:
-            target = unquote(target)
+            return _external_amazon_url(unquote(target))
+
+    if "google." in host or host == "google.com" or host == "www.google.com":
+        target = str((params.get("q") or params.get("url") or [""])[0]).strip()
+        if target:
+            return _external_amazon_url(unquote(target))
+
+    if "bing.com" in host:
+        # Alcuni link Bing sono diretti; altri usano u=a1<base64-url>.
+        target = str((params.get("u") or [""])[0]).strip()
+        if target.startswith("a1"):
+            token = target[2:]
             try:
-                target_parsed = urlparse(target)
-                target_host = (target_parsed.hostname or "").lower()
-                if target_host in {"amazon.it", "www.amazon.it"}:
-                    return target
+                padding = "=" * (-len(token) % 4)
+                decoded = base64.urlsafe_b64decode(token + padding).decode(
+                    "utf-8", errors="ignore"
+                )
+                return _external_amazon_url(decoded)
             except Exception:
-                return ""
+                pass
 
     return ""
 
 
 def _fetch_external_search_html(url: str) -> Optional[str]:
-    """Fetch leggero di un motore esterno, usato soltanto come ultima risorsa."""
     try:
         session = _get_http_session()
         response = session.get(
             url,
             headers={
-                "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "it-IT,it;q=0.9,en;q=0.6",
             },
             timeout=EXTERNAL_DISCOVERY_TIMEOUT,
             allow_redirects=True,
         )
-        if response.status_code == 200 and len(response.text or "") >= 1000:
+        if response.status_code == 200 and len(response.text or "") >= 500:
             return response.text
+        LOGGER.info(
+            "External discovery http status=%s len=%s host=%s",
+            response.status_code,
+            len(response.text or ""),
+            urlparse(url).hostname or "",
+        )
     except requests.RequestException as exc:
         LOGGER.info(
-            "External discovery error=%s",
+            "External discovery error=%s host=%s",
             type(exc).__name__,
+            urlparse(url).hostname or "",
         )
-
     return None
+
+
+def _external_discovery_urls(keyword: str) -> dict[str, str]:
+    clean = " ".join(str(keyword or "").strip().split())
+    query = f'site:amazon.it/dp/ {clean}'
+    return {
+        "bing_rss": "https://www.bing.com/search?" + urlencode({
+            "q": query,
+            "format": "rss",
+            "setlang": "it",
+        }),
+        "google": "https://www.google.com/search?" + urlencode({
+            "q": query,
+            "num": 20,
+            "hl": "it",
+        }),
+        "duckduckgo": "https://html.duckduckgo.com/html/?" + urlencode({
+            "q": query,
+            "kl": "it-it",
+        }),
+    }
+
+
+def _parse_external_engine_products(
+    source: str,
+    html_text: str,
+    partner_tag: str,
+    seen: set[str],
+    target: int,
+) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    candidates: list[tuple[str, str]] = []
+
+    if source == "bing_rss":
+        try:
+            root = ET.fromstring(html_text)
+            for item in root.findall(".//item"):
+                link = (item.findtext("link") or "").strip()
+                title = " ".join((item.findtext("title") or "").split())
+                candidates.append((link, title))
+        except ET.ParseError:
+            return []
+    else:
+        soup = BeautifulSoup(html_text, "html.parser")
+        if source == "google":
+            links = soup.select("a[href]")
+        else:
+            links = soup.select("a.result__a, a.result-link, .result a[href], a[href]")
+        for link in links:
+            href = str(link.get("href") or "").strip()
+            title = " ".join(link.get_text(" ", strip=True).split())
+            candidates.append((href, title))
+
+    for href, title in candidates:
+        amazon_url = _external_amazon_url(href)
+        if not amazon_url:
+            continue
+        match = RE_ASIN.search(amazon_url)
+        if not match:
+            continue
+        asin = match.group(1).upper()
+        if asin in seen:
+            continue
+        seen.add(asin)
+        detail_page_url = _normalize_product_detail_url(amazon_url, asin)
+        if len(title) < 3:
+            title = f"Prodotto Amazon {asin}"
+        found.append({
+            "asin": asin,
+            "titolo": title,
+            "immagine_url": "",
+            "prezzo_iniziale": None,
+            "prezzo_finale": None,
+            "prezzo_verificato": False,
+            "sconto": "",
+            "sconto_val": 0,
+            "saving_basis_label": "",
+            "is_prime_exclusive": False,
+            "is_prime": False,
+            "prime_filter_match": False,
+            "tipo_offerta": "",
+            "sold_qty_month": None,
+            "sold_qty_label": "",
+            "sales_rank": None,
+            "sales_rank_category": "",
+            "detail_page_url": detail_page_url,
+            "link_affiliato": _affiliate_detail_url(detail_page_url, asin, partner_tag),
+            "source": f"external_discovery_{source}",
+        })
+        if len(found) >= target:
+            break
+    return found
 
 
 def _discover_amazon_products_external(
@@ -1979,102 +2157,56 @@ def _discover_amazon_products_external(
     target: int,
     exclude_asins: set[str],
 ) -> list[dict[str, Any]]:
-    """Scopre ASIN Amazon tramite indice web se Amazon Search è bloccata.
-
-    I dati mostrati vengono poi corretti/arricchiti dalla pagina prodotto Amazon.
-    """
+    """Interroga più indici in parallelo e usa solo URL amazon.it reali."""
     clean = " ".join(str(keyword or "").strip().split())
     if not clean or target <= 0:
         return []
 
-    query_variants = (
-        f'site:amazon.it/dp/ "{clean}" Amazon',
-        f'site:amazon.it/gp/product/ "{clean}" Amazon',
-    )
+    urls = _external_discovery_urls(clean)
+    responses: dict[str, str] = {}
 
-    found: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=len(urls)) as executor:
+        future_map = {
+            executor.submit(_fetch_external_search_html, url): source
+            for source, url in urls.items()
+        }
+        for future in as_completed(future_map):
+            source = future_map[future]
+            try:
+                text = future.result()
+            except Exception:
+                text = None
+            if text:
+                responses[source] = text
+
     seen = set(exclude_asins)
-
-    for query in query_variants[:EXTERNAL_DISCOVERY_MAX_PAGES]:
-        if len(found) >= target:
-            break
-
-        url = (
-            "https://html.duckduckgo.com/html/?"
-            + urlencode({"q": query, "kl": "it-it"})
-        )
-        html_text = _fetch_external_search_html(url)
-        if not html_text:
+    found: list[dict[str, Any]] = []
+    # Bing RSS è il formato più semplice; Google/DDG completano se necessario.
+    for source in ("bing_rss", "google", "duckduckgo"):
+        text = responses.get(source)
+        if not text:
             continue
-
-        soup = BeautifulSoup(html_text, "html.parser")
-
-        links = soup.select(
-            "a.result__a, a.result-link, .result a[href], a[href]"
+        remaining = target - len(found)
+        if remaining <= 0:
+            break
+        products = _parse_external_engine_products(
+            source, text, partner_tag, seen, remaining
         )
-
-        for link in links:
-            href = str(link.get("href") or "").strip()
-            amazon_url = _external_amazon_url(href)
-            if not amazon_url:
-                continue
-
-            match = RE_ASIN.search(amazon_url)
-            if not match:
-                continue
-
-            asin = match.group(1).upper()
-            if asin in seen:
-                continue
-
-            title = " ".join(link.get_text(" ", strip=True).split())
-            if len(title) < 3:
-                title = f"Prodotto Amazon {asin}"
-
-            detail_page_url = _normalize_product_detail_url(
-                amazon_url,
-                asin,
-            )
-
-            found.append({
-                "asin": asin,
-                "titolo": title,
-                "immagine_url": "",
-                "prezzo_iniziale": None,
-                "prezzo_finale": None,
-                "prezzo_verificato": False,
-                "sconto": "",
-                "sconto_val": 0,
-                "saving_basis_label": "",
-                "is_prime_exclusive": False,
-                "is_prime": False,
-                "prime_filter_match": False,
-                "tipo_offerta": "",
-                "sold_qty_month": None,
-                "sold_qty_label": "",
-                "sales_rank": None,
-                "sales_rank_category": "",
-                "detail_page_url": detail_page_url,
-                "link_affiliato": _affiliate_detail_url(
-                    detail_page_url,
-                    asin,
-                    partner_tag,
-                ),
-                "source": "external_discovery_amazon_url",
-            })
-            seen.add(asin)
-
-            if len(found) >= target:
-                break
+        found.extend(products)
 
     LOGGER.info(
-        "External discovery keyword=%r products=%s target=%s",
+        "External discovery multi keyword=%r sources_ok=%s products=%s target=%s",
         clean,
+        len(responses),
         len(found),
         target,
     )
-
+    _set_search_diagnostics(
+        external_sources_ok=len(responses),
+        external_products=len(found),
+    )
     return found
+
 
 def _extract_products_from_html(
     html_text: str,
@@ -2203,6 +2335,8 @@ def _search_html_fallback(
         html_variants_received=0,
         html_variants_with_product_signals=0,
         products_parsed=0,
+        external_sources_ok=0,
+        external_products=0,
     )
 
     diagnostic_pages_attempted = 0
@@ -2282,7 +2416,17 @@ def _search_html_fallback(
 
         return added
 
-    for page in range(1, max_pages + 1):
+    if html_search_circuit_open():
+        LOGGER.info(
+            "HTML search circuit open: skip Amazon SERP keyword=%r cooldown=%smin",
+            clean_keyword,
+            HTML_SEARCH_COOLDOWN // 60,
+        )
+        pages_to_scan = ()
+    else:
+        pages_to_scan = range(1, max_pages + 1)
+
+    for page in pages_to_scan:
         if len(discovered) >= target:
             break
 
