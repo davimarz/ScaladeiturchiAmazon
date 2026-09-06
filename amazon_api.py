@@ -1367,6 +1367,271 @@ def _best_serp_image_url(image: Any) -> str:
     usable.sort(key=lambda pair: pair[0], reverse=True)
     return usable[0][1]
 
+
+def _nearest_search_product_container(link: Any) -> Any:
+    """Trova una card prodotto anche se Amazon cambia i wrapper SERP."""
+    if link is None:
+        return None
+
+    # Prima prova i wrapper noti.
+    known = link.find_parent(
+        attrs={"data-component-type": "s-search-result"}
+    )
+    if known is not None:
+        return known
+
+    known = link.find_parent(attrs={"data-asin": True})
+    if known is not None:
+        asin = str(known.get("data-asin") or "").strip()
+        if len(asin) == 10:
+            return known
+
+    # Fallback robusto: risali pochi livelli e scegli il primo contenitore
+    # abbastanza piccolo che abbia immagine + testo/prezzo.
+    current = link.parent
+    best = None
+
+    for _ in range(8):
+        if current is None:
+            break
+
+        try:
+            text = current.get_text(" ", strip=True)
+            has_image = current.select_one("img") is not None
+            has_price = (
+                current.select_one(".a-price")
+                or current.select_one(".a-price-whole")
+                or current.select_one(".a-color-price")
+            ) is not None
+
+            if has_image and len(text) >= 5:
+                best = current
+                # Una card con prezzo è preferibile: fermati subito.
+                if has_price and len(text) < 7000:
+                    return current
+
+            # Evita di risalire fino all'intera pagina.
+            if len(text) > 15000:
+                break
+        except Exception:
+            pass
+
+        current = current.parent
+
+    return best or link.parent
+
+
+def _title_from_search_node(
+    node: Any,
+    product_link: Any = None,
+) -> str:
+    """Titolo robusto: heading -> aria-label -> link -> alt immagine."""
+    if node is None:
+        return ""
+
+    selectors = (
+        "h2 a span",
+        "h2 span",
+        "h2",
+        "h3 a span",
+        "h3 span",
+        "h3",
+        "[data-cy='title-recipe']",
+        ".a-size-medium.a-color-base.a-text-normal",
+        ".a-size-base-plus.a-color-base.a-text-normal",
+        ".a-size-base.a-color-base.a-text-normal",
+    )
+
+    for selector in selectors:
+        element = node.select_one(selector)
+        if element is not None:
+            title = " ".join(element.get_text(" ", strip=True).split())
+            if len(title) >= 3:
+                return title
+
+    link = product_link
+    if link is None:
+        link = (
+            node.select_one("a[href*='/dp/']")
+            or node.select_one("a[href*='/gp/product/']")
+        )
+
+    if link is not None:
+        for attr in ("aria-label", "title"):
+            title = " ".join(str(link.get(attr) or "").split())
+            if len(title) >= 3:
+                return title
+
+        title = " ".join(link.get_text(" ", strip=True).split())
+        if len(title) >= 3:
+            return title
+
+    image = node.select_one("img")
+    if image is not None:
+        title = " ".join(str(image.get("alt") or "").split())
+        if len(title) >= 3:
+            return title
+
+    return ""
+
+
+def _build_search_product_from_node(
+    node: Any,
+    partner_tag: str,
+    min_price: Optional[float],
+    max_price: Optional[float],
+    require_prime: bool,
+    asin_hint: str = "",
+    href_hint: str = "",
+    link_hint: Any = None,
+) -> Optional[dict[str, Any]]:
+    """Costruisce una scheda da qualunque card/link Amazon riconoscibile."""
+    if node is None:
+        return None
+
+    asin = str(asin_hint or node.get("data-asin") or "").strip().upper()
+
+    product_link = link_hint
+    if product_link is None:
+        product_link = (
+            node.select_one("h2 a[href*='/dp/']")
+            or node.select_one("h3 a[href*='/dp/']")
+            or node.select_one("a.a-link-normal.s-no-outline[href*='/dp/']")
+            or node.select_one("a[href*='/dp/']")
+            or node.select_one("a[href*='/gp/product/']")
+        )
+
+    raw_href = str(href_hint or "").strip()
+    if not raw_href and product_link is not None:
+        raw_href = str(product_link.get("href") or "").strip()
+
+    if len(asin) != 10 and raw_href:
+        match = RE_ASIN.search(raw_href)
+        if match:
+            asin = match.group(1).upper()
+
+    if len(asin) != 10:
+        return None
+
+    title = _title_from_search_node(node, product_link)
+    if len(title) < 3:
+        return None
+
+    detail_page_url = _normalize_product_detail_url(raw_href, asin)
+
+    image = node.select_one(
+        "img.s-image, img[data-a-dynamic-image], img[srcset], img[data-src], img"
+    )
+    image_url = _best_serp_image_url(image)
+
+    price, old_price, discount_value = _extract_serp_prices(node)
+    price = float(price or 0.0)
+
+    is_prime = _extract_html_prime(node)
+    if require_prime and not is_prime:
+        return None
+
+    if min_price is not None:
+        if price <= 0 or price < float(min_price):
+            return None
+
+    if max_price is not None:
+        if price <= 0 or price > float(max_price):
+            return None
+
+    sold_qty_month, sold_qty_label = _extract_monthly_bought(node)
+
+    return {
+        "asin": asin,
+        "titolo": title,
+        "immagine_url": image_url,
+        "prezzo_iniziale": old_price,
+        "prezzo_finale": price if price > 0 else None,
+        "prezzo_verificato": False,
+        "_serp_price_confidence": (
+            "base_price_node" if price > 0 else "missing"
+        ),
+        "sconto": f"-{discount_value}%" if discount_value > 0 else "",
+        "sconto_val": discount_value,
+        "saving_basis_label": "",
+        "is_prime_exclusive": False,
+        "is_prime": is_prime,
+        "prime_filter_match": is_prime,
+        "tipo_offerta": "",
+        "sold_qty_month": sold_qty_month,
+        "sold_qty_label": sold_qty_label,
+        "sales_rank": None,
+        "sales_rank_category": "",
+        "detail_page_url": detail_page_url,
+        "link_affiliato": _affiliate_detail_url(
+            detail_page_url,
+            asin,
+            partner_tag,
+        ),
+        "source": "amazon_html_search",
+    }
+
+
+def _amazon_search_urls(keyword: str, page: int) -> tuple[str, ...]:
+    """Più forme equivalenti della ricerca Amazon.
+
+    Amazon può servire markup differente a seconda dell'URL/referrer.
+    """
+    clean = " ".join(str(keyword or "").strip().split())
+    page_num = max(1, int(page or 1))
+
+    variants = [
+        f"https://www.amazon.it/s?{urlencode({'k': clean, 'page': page_num})}",
+        f"https://www.amazon.it/s?{urlencode({'i': 'aps', 'k': clean, 'page': page_num})}",
+        (
+            "https://www.amazon.it/s?"
+            + urlencode({
+                "url": "search-alias=aps",
+                "field-keywords": clean,
+                "page": page_num,
+            })
+        ),
+    ]
+
+    # Mantieni ordine eliminando eventuali duplicati.
+    return tuple(dict.fromkeys(variants))
+
+
+def _fetch_search_html_variants(
+    keyword: str,
+    page: int,
+) -> list[str]:
+    """Scarica in parallelo le varianti della stessa ricerca.
+
+    Tre tentativi paralleli costano circa il tempo del più lento,
+    non la somma dei tre timeout.
+    """
+    urls = _amazon_search_urls(keyword, page)
+    html_pages: list[str] = []
+
+    workers = min(3, len(urls))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_get_amazon_html_cached, url): index
+            for index, url in enumerate(urls)
+        }
+
+        ordered: dict[int, str] = {}
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                html_text = future.result()
+            except Exception:
+                html_text = None
+
+            if html_text:
+                ordered[index] = html_text
+
+    for index in sorted(ordered):
+        html_pages.append(ordered[index])
+
+    return html_pages
+
 def _extract_products_from_html(
     html_text: str,
     partner_tag: str,
@@ -1378,123 +1643,87 @@ def _extract_products_from_html(
         return []
 
     soup = BeautifulSoup(html_text, "html.parser")
-
-    items = soup.select("div[data-component-type='s-search-result']")
-    if not items:
-        items = [
-            node
-            for node in soup.select("div[data-asin]")
-            if len(str(node.get("data-asin") or "").strip()) == 10
-        ]
-    if not items:
-        items = soup.select("div.s-result-item, li.s-result-item")
+    search_scope = (
+        soup.select_one("#search")
+        or soup.select_one("main")
+        or soup
+    )
 
     products: list[dict[str, Any]] = []
     seen_asins: set[str] = set()
+    processed_nodes: set[int] = set()
+
+    # Strategia 1: wrapper classici Amazon.
+    items = list(
+        search_scope.select("div[data-component-type='s-search-result']")
+    )
+
+    items.extend(
+        node
+        for node in search_scope.select("div[data-asin]")
+        if len(str(node.get("data-asin") or "").strip()) == 10
+    )
+
+    items.extend(
+        search_scope.select("div.s-result-item, li.s-result-item")
+    )
 
     for item in items:
-        asin = str(item.get("data-asin") or "").strip().upper()
+        node_id = id(item)
+        if node_id in processed_nodes:
+            continue
+        processed_nodes.add(node_id)
 
-        link_with_asin = (
-            item.select_one("h2 a[href*='/dp/']")
-            or item.select_one("a.a-link-normal.s-no-outline[href*='/dp/']")
-            or item.select_one("a[href*='/dp/']")
-            or item.select_one("a[href*='/gp/product/']")
+        product = _build_search_product_from_node(
+            item,
+            partner_tag=partner_tag,
+            min_price=min_price,
+            max_price=max_price,
+            require_prime=require_prime,
         )
-        raw_detail_href = (
-            str(link_with_asin.get("href") or "")
-            if link_with_asin
-            else ""
-        )
-
-        if len(asin) != 10 and raw_detail_href:
-            match = RE_ASIN.search(raw_detail_href)
-            if match:
-                asin = match.group(1).upper()
-
-        if len(asin) != 10 or asin in seen_asins:
+        if not product:
             continue
 
-        detail_page_url = _normalize_product_detail_url(
-            raw_detail_href,
-            asin,
-        )
-
-        title = ""
-        title_element = (
-            item.select_one("h2 a span")
-            or item.select_one("h2 span")
-            or item.select_one("h2")
-            or item.select_one(".a-size-medium.a-color-base.a-text-normal")
-            or item.select_one(".a-size-base-plus.a-color-base.a-text-normal")
-        )
-        if title_element:
-            title = title_element.get_text(" ", strip=True)
-
-        if not title or len(title) < 3:
+        asin = str(product.get("asin") or "").strip().upper()
+        if asin in seen_asins:
             continue
 
-        image = item.select_one(
-            "img.s-image, img[data-a-dynamic-image], img[srcset], img[data-src], img"
-        )
-        image_url = _best_serp_image_url(image)
+        seen_asins.add(asin)
+        products.append(product)
 
-        price, old_price, discount_value = _extract_serp_prices(item)
-        price = float(price or 0.0)
+    # Strategia 2: indipendente dal wrapper.
+    # Se Amazon cambia il markup ma mantiene i link /dp/ASIN, il prodotto
+    # continua a essere trovato.
+    anchors = search_scope.select(
+        "a[href*='/dp/'], a[href*='/gp/product/']"
+    )
 
-        is_prime = _extract_html_prime(item)
-        if require_prime and not is_prime:
+    for link in anchors:
+        href = str(link.get("href") or "").strip()
+        match = RE_ASIN.search(href)
+        if not match:
             continue
 
-        if min_price is not None:
-            if price <= 0 or price < float(min_price):
-                continue
-        if max_price is not None:
-            if price <= 0 or price > float(max_price):
-                continue
+        asin = match.group(1).upper()
+        if asin in seen_asins:
+            continue
 
-        sold_qty_month, sold_qty_label = _extract_monthly_bought(item)
+        node = _nearest_search_product_container(link)
+        if node is None:
+            continue
 
-        product = {
-            "asin": asin,
-            "titolo": title,
-            "immagine_url": image_url,
-            "prezzo_iniziale": old_price,
-            "prezzo_finale": price if price > 0 else None,
-            # Il prezzo SERP è un candidato utile per filtri/ordinamento,
-            # ma diventa "verificato" soltanto dopo il controllo corePrice.
-            "prezzo_verificato": False,
-            "_serp_price_confidence": (
-                "base_price_node"
-                if price > 0
-                else "missing"
-            ),
-            "sconto": (
-                f"-{discount_value}%"
-                if discount_value > 0
-                else ""
-            ),
-            "sconto_val": discount_value,
-            "saving_basis_label": "",
-            "is_prime_exclusive": False,
-            "is_prime": is_prime,
-            "prime_filter_match": is_prime,
-            "tipo_offerta": "",
-            # Il conteggio recensioni viene usato soltanto come tie-break
-            # interno quando l'utente sceglie "Quantità vendite".
-            # Non viene mostrato come vendite reali.
-            "sold_qty_month": sold_qty_month,
-            "sold_qty_label": sold_qty_label,
-            "sales_rank": None,
-            "sales_rank_category": "",
-            "detail_page_url": detail_page_url,
-            "link_affiliato": _affiliate_detail_url(
-                detail_page_url,
-                asin,
-                partner_tag,
-            ),
-            "source": "amazon_html_search",
-        }
+        product = _build_search_product_from_node(
+            node,
+            partner_tag=partner_tag,
+            min_price=min_price,
+            max_price=max_price,
+            require_prime=require_prime,
+            asin_hint=asin,
+            href_hint=href,
+            link_hint=link,
+        )
+        if not product:
+            continue
 
         seen_asins.add(asin)
         products.append(product)
@@ -1502,7 +1731,6 @@ def _extract_products_from_html(
     return products
 
 
-@st.cache_data(ttl=HTML_CACHE_TTL, show_spinner=False, max_entries=128)
 def _search_html_fallback(
     keyword: str,
     sort_type: str,
@@ -1535,23 +1763,18 @@ def _search_html_fallback(
     )
 
     for page in range(1, max_pages + 1):
-        query = {
-            "k": clean_keyword,
-            "page": page,
-        }
-
-        # IMPORTANTE:
-        # usiamo sempre la ricerca HTML standard, identica a quella della
-        # Vetrina. L'ordinamento viene applicato localmente dopo il parsing.
-        # Alcune varianti Amazon con parametro `s` possono restituire markup
-        # diverso o pagine non utilizzabili dai server Streamlit.
-        url = f"https://www.amazon.it/s?{urlencode(query)}"
-        html_text = _get_amazon_html_cached(url)
+        # Amazon può restituire markup differente per URL equivalenti.
+        # Scarichiamo tre varianti in parallelo e uniamo gli ASIN trovati.
+        html_pages = _fetch_search_html_variants(
+            clean_keyword,
+            page,
+        )
 
         page_products: list[dict[str, Any]] = []
+        page_merge_seen: set[str] = set()
 
-        if html_text:
-            page_products = _extract_products_from_html(
+        for html_text in html_pages:
+            parsed = _extract_products_from_html(
                 html_text,
                 partner_tag=partner_tag,
                 min_price=min_price,
@@ -1559,33 +1782,23 @@ def _search_html_fallback(
                 require_prime=require_prime,
             )
 
-        # Se la pagina esiste ma il markup non ha prodotto schede,
-        # proviamo il secondo URL. Prima lo facevamo solo quando il download
-        # falliva completamente.
-        if not page_products:
-            alt_query = urlencode(
-                {
-                    "url": "search-alias=aps",
-                    "field-keywords": clean_keyword,
-                    "page": page,
-                }
-            )
-            alt_url = f"https://www.amazon.it/s/ref=nb_sb_noss?{alt_query}"
-            alt_html = _get_amazon_html_cached(alt_url)
+            for product in parsed:
+                asin = str(product.get("asin") or "").strip().upper()
+                if len(asin) != 10 or asin in page_merge_seen:
+                    continue
+                page_merge_seen.add(asin)
+                page_products.append(product)
 
-            if alt_html:
-                page_products = _extract_products_from_html(
-                    alt_html,
-                    partner_tag=partner_tag,
-                    min_price=min_price,
-                    max_price=max_price,
-                    require_prime=require_prime,
-                )
+            # Per la ricerca iniziale 10 risultati sono sufficienti:
+            # non serve elaborare altro markup equivalente.
+            if len(page_products) >= max(10, target):
+                break
 
         LOGGER.info(
-            "HTML fallback query=%r page=%s prodotti=%s",
+            "HTML fallback query=%r page=%s html_variants=%s prodotti=%s",
             clean_keyword,
             page,
+            len(html_pages),
             len(page_products),
         )
 

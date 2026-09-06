@@ -134,3 +134,23 @@ Aggiornata la descrizione promozionale della pagina HAUL:
 
 Resta visibile una nota che invita a verificare le condizioni aggiornate
 direttamente su Amazon Haul, perché le promozioni possono cambiare.
+
+
+## V22 - ricerca Amazon più robusta
+
+Correzioni principali:
+- `_search_html_fallback` non è più cacheato come risultato completo:
+  un fallimento temporaneo/zero risultati non resta bloccato in cache;
+- l'HTML valido continua a essere cacheato normalmente;
+- per ogni pagina vengono provate in parallelo 3 forme equivalenti della
+  ricerca Amazon (`k`, `i=aps`, `search-alias=aps`);
+- parser di emergenza indipendente da `s-search-result` / `data-asin`:
+  cerca direttamente i link `/dp/ASIN` e ricostruisce la card dal contenitore;
+- titolo recuperabile anche da `aria-label`, attributo `title`, testo link
+  o `alt` dell'immagine;
+- merge degli ASIN trovati dalle diverse varianti senza duplicati;
+- prezzo e verifica detail/corePrice V21 rimangono invariati;
+- circuit breaker 403 resta a 60 minuti.
+
+Questo intervento è mirato soprattutto a query comuni come `notebook`,
+nelle quali Amazon può servire un markup differente tra una richiesta e l'altra.

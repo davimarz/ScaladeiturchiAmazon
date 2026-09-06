@@ -806,7 +806,7 @@ def _perform_search(target_count: int) -> None:
     if not results:
         # Non mostriamo all'utente differenze tra API e fallback HTML.
         st.session_state["search_notice"] = (
-            "Nessun prodotto trovato. Prova con una parola chiave diversa."
+            "Amazon non ha restituito prodotti leggibili in questo momento. ""Riprova la ricerca: il catalogo può rispondere in modo temporaneamente variabile."
         )
     elif len(results) < target_count:
         st.session_state["search_notice"] = (
@@ -1550,7 +1550,7 @@ elif active_tab == "cerca":
         and not st.session_state.get("search_notice")
     ):
         st.warning(
-            "Nessun prodotto trovato. Prova con una parola chiave diversa."
+            "Amazon non ha restituito prodotti leggibili in questo momento. ""Riprova la ricerca: il catalogo può rispondere in modo temporaneamente variabile."
         )
 
 elif active_tab == "privacy":
