@@ -116,3 +116,7 @@ Gerarchia mobile: titolo prodotto 16 px, prezzo 26 px, pulsante 15 px/48 px, det
 
 ## Recupero temporaneamente non disponibile
 La ricerca propaga la scadenza della cache al conto alla rovescia. Durante l’attesa i comandi di ricerca sono bloccati senza consumare quota. Nessun recupero automatico alla scadenza. Conservati i risultati precedenti; un recupero vuoto non viene interpretato come assenza certa di prodotti.
+
+
+## Schede semplificate
+Rimosso Dettagli e il titolo ripetuto. Eventuali note sul prezzo di riferimento e sulle vendite restano visibili. Pulsante principale: Vedi offerta; destinazione e tag affiliato invariati.

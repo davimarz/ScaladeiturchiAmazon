@@ -679,8 +679,6 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
 }
 
 /* Mobile hierarchy: product, price, action, supporting information. */
-.pcm-more summary {cursor:pointer; padding:8px 0; color:#075985; font-size:14px;}
-.pcm-more p {font-size:14px; line-height:1.45; overflow-wrap:anywhere;}
 .pcm-savings {flex-basis:100%; color:#047857; font-size:14px; font-weight:700;}
 @media (max-width: 700px) {
     .brand-header-box {padding:10px 8px !important;}
@@ -705,7 +703,6 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
     .pcm-share {width:100%;}
     .pcm-share summary {font-size:14px; padding:10px 0;}
     .soc-chip {font-size:13px; min-height:44px; padding:0 10px;}
-    .pcm-more summary {min-height:44px; display:flex; align-items:center;}
     .tab-content-panel h2, .vetrina-promo h2 {font-size:21px !important; line-height:1.3 !important;}
     .haul-promo {padding:10px !important;}
     .haul-promo > div:first-child {font-size:16px !important;}
@@ -1293,14 +1290,11 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         f"<div class='pcm-note'><strong>{variant_label}</strong></div>"
         f"<div class='pcm-prices'>{price_html}</div>"
         f"<div class='pcm-badges-row'>{badges_html}</div>"
-        "<details class='pcm-more'><summary>Dettagli</summary>"
-        f"<p>{safe_title}</p>"
-        f"<p>{html.escape(note)}</p>"
-        "</details>"
+        f"<div class='pcm-note'>{html.escape(note)}</div>"
         "<div class='pcm-bottom-bar'>"
         f"<a class='pcm-buy-btn-compact' href='{safe_link}' "
         "target='_blank' rel='noopener noreferrer sponsored'>"
-        "🛒 Vedi offerta su Amazon"
+        "🛒 Vedi offerta"
         "</a>"
         "<details class='pcm-share'><summary>Condividi</summary><div class='pcm-social-row'>"
         f"<a class='soc-chip soc-wa' href='{html.escape(share['wa'], quote=True)}' "
