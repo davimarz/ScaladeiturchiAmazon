@@ -29,6 +29,7 @@ import shared_results
 import inspect
 import search_relevance
 import prime_status
+import product_dedup
 import streamlit as st
 from bs4 import BeautifulSoup
 
@@ -2719,6 +2720,8 @@ def _search_html_fallback(
                     continue
                 if require_prime and not _confirmed_prime(product):
                     continue
+                if product_dedup.already_present(product, discovered + valid):
+                    continue
                 valid.append(product)
                 if len(discovered) + len(valid) >= target:
                     return valid
@@ -3193,6 +3196,8 @@ def _offerte_uncached(
                 continue
 
             seen_asins.add(asin)
+            if product_dedup.already_present(product, products):
+                continue
             product.setdefault("_amazon_position", len(products))
             products.append(product)
 
@@ -3261,6 +3266,8 @@ def _offerte_uncached(
             continue
 
         seen_asins.add(asin)
+        if product_dedup.already_present(product, products):
+            continue
         product.setdefault("_amazon_position", len(products))
         products.append(product)
 
@@ -3583,6 +3590,7 @@ def _haul_uncached(
         partner_tag=configured_tag,
     )
 
+    pool = product_dedup.unique(pool)
     if not pool:
         raise api_budget.BudgetUnavailable("Nessun prodotto leggibile nella pagina HAUL")
 

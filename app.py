@@ -13,6 +13,7 @@ import streamlit.components.v1 as components
 
 import amazon_api
 import visitor_limit
+import product_dedup
 from pathlib import Path
 
 
@@ -718,7 +719,7 @@ def _sort_loaded_products(
     conserva l'ordine originale del fallback HTML anche dopo un precedente
     ordinamento per prezzo.
     """
-    ordered = list(products or [])
+    ordered = product_dedup.unique(products or [])
 
     # Ordine di sicurezza per elementi che non hanno metadati di ranking.
     for index, product in enumerate(ordered):
@@ -875,7 +876,7 @@ def _perform_search(target_count: int) -> None:
         st.session_state["offerte"] = []
         st.session_state["has_searched"] = True
         return
-    normalized_results = list(results or [])
+    normalized_results = product_dedup.unique(results or [])
 
     for index, product in enumerate(normalized_results):
         product.setdefault("_loaded_position", index)
@@ -941,7 +942,7 @@ def _load_more() -> None:
     merged = list(existing)
     for product in list(new_results or []):
         asin = str(product.get("asin") or "").strip().upper()
-        if not asin or asin in existing_asins:
+        if not asin or asin in existing_asins or product_dedup.already_present(product, merged):
             continue
         product.setdefault("_loaded_position", len(merged))
         existing_asins.add(asin)
@@ -1430,7 +1431,7 @@ if active_tab == "haul":
                 exclude_asins=previous_asins,
             )
 
-        new_haul = list(haul_products or [])
+        new_haul = product_dedup.unique(haul_products or [])
         st.session_state["offerte_haul"] = new_haul
         if new_haul:
             st.session_state["haul_previous_asins"] = [
@@ -1491,7 +1492,7 @@ elif active_tab == "vetrina":
                 refresh_token=current_token,
             )
 
-        new_showcase = list(showcase or [])
+        new_showcase = product_dedup.unique(showcase or [])
         st.session_state["offerte_vetrina"] = new_showcase
         # Nessun prezzo di una vecchia selezione dopo un refresh fallito.
         st.session_state["vetrina_loaded_token"] = current_token

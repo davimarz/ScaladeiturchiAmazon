@@ -64,3 +64,8 @@ Sintassi e test locali su cache, concorrenza, quote, recupero progressivo, perti
 ### Avvio dal prezzo crescente
 
 Ogni click su Cerca reimposta Prezzo minimo. Creators API usa Price:LowToHigh; tutte le varianti di ricerca web Amazon usano s=price-asc-rank. Anche il collegamento di ricerca diretto su Amazon richiede questo ordinamento. Rimane possibile riordinare localmente per quantità vendite dopo la ricerca. Le fonti esterne non garantiscono l'ordine globale Amazon: in quel caso sono ordinati soltanto i prezzi dei prodotti recuperati. Prezzi ignoti in fondo, senza promettere il minimo assoluto del catalogo o includere automaticamente le spese di spedizione.
+
+
+### Doppioni
+
+product_dedup.py elimina ASIN ripetuti e schede con lo stesso titolo normalizzato (almeno quattro parole) e la stessa immagine, anche con dimensioni immagine Amazon differenti. Taglie, colori e modelli scritti nel titolo restano distinti. Il controllo opera prima del conteggio dei risultati web/API, sul pool HAUL e come protezione finale nella UI e nel caricamento aggiuntivo. Non riconosce con certezza prodotti uguali con titoli e immagini differenti; evita accorpamenti basati sulla sola somiglianza. Se non ci sono abbastanza prodotti unici, l'elenco può contenerne meno di dieci.
