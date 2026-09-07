@@ -1458,7 +1458,7 @@ elif active_tab == "vetrina":
         <h2 style='font-size:.94rem;font-weight:900;color:#0369a1;
         margin:2px 0 2px 2px;'>🔥 Offerte in Vetrina</h2>
         <p style='font-size:.70rem;color:#64748b;margin:0 0 7px 2px;'>
-        Una selezione di prodotti da scoprire su Amazon.
+        <strong style="display:block;font-size:1.05rem;color:#0369a1;margin-bottom:5px;">🔎 Meno ricerche, più scoperte</strong><span style="font-size:.85rem;color:#334155;">Parti dalla nostra Vetrina per trovare nuove idee per i tuoi acquisti.</span>
         </p>
         """,
         unsafe_allow_html=True,
@@ -1787,4 +1787,5 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
 
