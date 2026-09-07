@@ -88,3 +88,19 @@ Questo raggruppamento sostituisce l'eliminazione delle offerte basata sul titolo
 Taglia e colore sono letti dalla selezione del dettaglio HTML, quando riconoscibile. Codice modello e marca sono letti dalle tabelle prodotto quando disponibili. Senza questi metadati, per alcune scarpe si usa il nome del modello nel titolo; se non è riconoscibile, si mantengono schede separate. Hyper LD e Hyper LD 6 non vengono equiparati automaticamente. La taglia mancante resta da verificare. Nessun costo di spedizione viene inventato o sommato al prezzo prodotto.
 
 La ricerca mira a dieci gruppi distinti nei limiti esistenti. Carica altri 10 conserva e unisce le varianti già caricate; il numero di nuovi modelli può risultare inferiore al target. Nei dati scaduti vengono rimossi prezzi e sconti anche dalle varianti, evitando di ripristinarli durante il raggruppamento. Il riconoscimento universale di tutte le categorie richiederebbe dati strutturati aggiuntivi: non si raggruppa dalla sola foto.
+
+
+## Revisione esperienza visitatore (punti 1–8)
+- Identificativo browser inizializzato solo in Cerca, dopo intestazione e navigazione; errori nei log. Nessun aggiramento del limite tramite ID temporaneo.
+- Pulsanti Amazon da 48 px, condivisione richiudibile, affiliazione evidente.
+- Risparmio in euro solo per prezzi verificati con riferimento superiore; varianti conservate con il proprio collegamento.
+- Limite di 10 richieste invariato; risultati conservati e invito alla Vetrina dopo il limite.
+- Rimossi modulo Contatti e invio SMTP; titolo H1 e testi semplificati.
+- Validazione locale: sintassi e regressioni con dati simulati. Verificare apertura a freddo, mobile e log nell'ambiente Streamlit pubblicato.
+
+## Interventi futuri da riprendere (approvati per una fase successiva)
+9. Misurazione aggregata dei clic per sezione, tempi ed errori; confronto con report Amazon.
+10. Valutazione di pagine editoriali utili per attirare nuovi visitatori.
+
+## Punto 11: collegamento alla schermata Home
+Avviso sui dispositivi mobili con istruzioni iPhone/Android. Dopo Non ora o Chiudi viene riproposto dalla prima visita successiva a 72 ore. Preferenza salvata nel browser; cancellare i dati del sito può far ricomparire l’avviso prima. Se l’archiviazione persistente è bloccata si usa quella di sessione quando disponibile. Nessuna chiamata Amazon aggiuntiva. Guida sempre disponibile nel footer. Caricare anche home_shortcut/index.html nel repository Streamlit. L’aggiunta resta manuale nel browser; non è un’installazione automatica. Verificare su iPhone e Android dopo il deploy.

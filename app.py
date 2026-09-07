@@ -3,10 +3,9 @@ from __future__ import annotations
 import html
 import logging
 import re
-import smtplib
+import math
 import time
 import urllib.parse
-from email.message import EmailMessage
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -24,13 +23,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-_browser_identity = components.declare_component(
-    "browser_identity", path=str(Path(__file__).parent / "browser_identity")
-)
-_browser_value = _browser_identity(key="persistent_browser_identity", default=None)
-if isinstance(_browser_value, str) and re.fullmatch(r"[a-fA-F0-9-]{36}", _browser_value):
-    st.session_state["visitor_id"] = _browser_value
-
 LOGGER = logging.getLogger("amazon_affiliate_app")
 MAX_RESULTS = amazon_api.MAX_RESULTS
 SORT_MAPPINGS = amazon_api.SORT_MAPPINGS
@@ -45,7 +37,6 @@ st.session_state.setdefault(
     "last_search",
     {"keyword": "", "sort": "Prezzo minimo", "prime_only": False},
 )
-st.session_state.setdefault("contact_sent_session", False)
 st.session_state.setdefault("offerte_vetrina", [])
 st.session_state.setdefault("vetrina_refresh_token", str(time.time_ns()))
 st.session_state.setdefault("vetrina_loaded_token", None)
@@ -59,9 +50,7 @@ st.session_state.setdefault("haul_loaded_token", None)
 st.session_state.setdefault("haul_previous_asins", [])
 st.session_state.setdefault("no_more_results", False)
 
-# La scheda Contatti resta nel codice ma non è visibile/raggiungibile
-# dalla navigazione pubblica.
-if st.session_state.get("current_tab") == "contatti":
+if st.session_state.get("current_tab") not in {"haul", "vetrina", "cerca", "privacy"}:
     st.session_state["current_tab"] = "haul"
 
 try:
@@ -117,6 +106,8 @@ html {
 }
 
 .brand-title-single {
+    margin: 0;
+    padding: 0;
     font-size: clamp(1.30rem, 6vw, 1.95rem) !important;
     font-weight: 900 !important;
     background: linear-gradient(
@@ -543,12 +534,12 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-height: 34px;
-    padding: 6px 18px;
+    min-height: 48px;
+    padding: 10px 18px;
     border-radius: 7px;
     background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
     color: #0f172a !important;
-    border: 1px solid #f59e0b;
+    border: 2px solid #92400e;
     font-size: 0.80rem;
     font-weight: 900;
     text-decoration: none !important;
@@ -560,6 +551,8 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
     background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
 }
 
+.pcm-share summary { cursor: pointer; padding: 12px 6px; color: #075985; }
+.pcm-share[open] summary { margin-bottom: 4px; }
 .pcm-social-row {
     display: flex;
     gap: 5px;
@@ -1077,7 +1070,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     except (TypeError, ValueError):
         old_price = None
 
-    if verified and final_price is not None and final_price > 0:
+    if verified and final_price is not None and math.isfinite(final_price) and final_price > 0:
         discount = html.escape(str(product.get("sconto") or ""))
 
         discount_html = (
@@ -1087,9 +1080,10 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         )
 
         old_html = ""
-        if old_price is not None and old_price > final_price:
+        if old_price is not None and math.isfinite(old_price) and old_price > final_price:
             old_html = (
                 f"<span class='pcm-price-old'>€{_format_eur(old_price)}</span>"
+                f"<span class='pcm-note'>Risparmi €{_format_eur(old_price - final_price)}</span>"
             )
 
         price_html = (
@@ -1151,20 +1145,20 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     saving_basis_label = str(product.get("saving_basis_label") or "").strip()
 
     if (
-        saving_basis_label
+        verified
+        and saving_basis_label
         and old_price is not None
         and final_price is not None
         and old_price > final_price
     ):
-        note += f"Prezzo di riferimento: {html.escape(saving_basis_label)}."
+        note += f"Prezzo di riferimento: {saving_basis_label}."
 
+    if old_price and final_price and verified and old_price > final_price and not saving_basis_label:
+        note += " Confronto con il prezzo di riferimento mostrato da Amazon."
     if sold_qty_month:
-        note += (
-            " La quantità indicata è una soglia minima mostrata da Amazon "
-            "per il mese scorso."
-        )
+        note += " Acquisti mensili: soglia indicata da Amazon."
     elif sales_rank:
-        note += " Il rank vendite non indica il numero esatto di unità vendute."
+        note += " Posizione in classifica, non quantità venduta."
 
     share = _share_urls(
         title,
@@ -1215,7 +1209,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         + "</div>"
         "<div class='pcm-details'>"
         f"<div class='pcm-title'>{safe_title}</div>"
-        f"<div class='pcm-note'>{variant_label}</div>"
+        f"<div class='pcm-note'><strong>{variant_label}</strong></div>"
         f"<div class='pcm-prices'>{price_html}</div>"
         f"<div class='pcm-badges-row'>{badges_html}</div>"
         f"<div class='pcm-note'>{html.escape(note)}</div>"
@@ -1224,9 +1218,10 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         "<div class='pcm-bottom-bar'>"
         f"<a class='pcm-buy-btn-compact' href='{safe_link}' "
         "target='_blank' rel='noopener noreferrer sponsored'>"
-        "🛒 Acquista su Amazon"
+        "🛒 Vedi offerta su Amazon"
         "</a>"
-        "<div class='pcm-social-row'>"
+        "<small>Link affiliato</small>"
+        "<details class='pcm-share'><summary>Condividi</summary><div class='pcm-social-row'>"
         f"<a class='soc-chip soc-wa' href='{html.escape(share['wa'], quote=True)}' "
         "target='_blank' rel='noopener noreferrer'>WA</a>"
         f"<a class='soc-chip soc-fb' href='{html.escape(share['fb'], quote=True)}' "
@@ -1235,7 +1230,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         "target='_blank' rel='noopener noreferrer'>TG</a>"
         f"<a class='soc-chip soc-mail' href='{html.escape(share['mail'], quote=True)}'>"
         "Mail</a>"
-        "</div>"
+        "</div></details>"
         "</div>"
         "</div>"
     )
@@ -1255,79 +1250,22 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
                 else:
                     label += " · Prezzo da verificare"
                 st.write(label)
-                st.link_button("Acquista questa variante", variant["link_affiliato"])
+                st.link_button("Vedi questa variante su Amazon", variant["link_affiliato"])
+                st.caption("Link affiliato")
 
 
 
-EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
-
-def validate_contact(
-    name: str,
-    phone: str,
-    email: str,
-    message: str,
-) -> tuple[bool, str]:
-    name = name.strip()
-    phone_digits = re.sub(r"\D", "", phone)
-    email = email.strip()
-    message = message.strip()
-
-    if not name or not phone_digits or not email or not message:
-        return False, "Compila tutti i campi obbligatori."
-
-    if len(name) < 3:
-        return False, "Inserisci un nome valido."
-
-    if not 8 <= len(phone_digits) <= 15:
-        return False, "Inserisci un numero di telefono valido."
-
-    if not EMAIL_REGEX.fullmatch(email):
-        return False, "Inserisci un indirizzo email valido."
-
-    if len(message) < 10:
-        return False, "Il messaggio deve contenere almeno 10 caratteri."
-
-    return True, ""
-
-
-def send_contact_email(
-    name: str,
-    phone: str,
-    user_email: str,
-    message: str,
-) -> tuple[bool, str]:
-    email_cfg = st.secrets.get("email", {})
-    sender = str(email_cfg.get("sender", "")).strip()
-    app_password = str(email_cfg.get("app_password", "")).replace(" ", "")
-    recipient = str(email_cfg.get("recipient") or sender).strip()
-
-    if not sender or not app_password or not recipient:
-        LOGGER.error("Configurazione email incompleta nei Secrets.")
-        return False, "Servizio email non configurato."
-
-    mail = EmailMessage()
-    mail["From"] = f"Scala dei Turchi <{sender}>"
-    mail["To"] = recipient
-    mail["Reply-To"] = user_email
-    mail["Subject"] = f"[Scala dei Turchi] Messaggio da {name}"
-    mail.set_content(
-        "Nuovo messaggio dal sito:\n\n"
-        f"Nome: {name}\n"
-        f"Telefono: {phone}\n"
-        f"Email: {user_email}\n\n"
-        f"Messaggio:\n{message}\n"
-    )
-
+def _initialize_browser_identity() -> None:
+    """Identity is only needed for searching; a component failure leaves navigation usable."""
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as server:
-            server.login(sender, app_password)
-            server.send_message(mail)
-
-        return True, ""
-    except Exception as exc:
-        LOGGER.error("Invio email fallito: %s", type(exc).__name__)
-        return False, "Invio non riuscito. Riprova più tardi."
+        component = components.declare_component(
+            "browser_identity", path=str(Path(__file__).parent / "browser_identity")
+        )
+        value = component(key="persistent_browser_identity", default=None)
+        if isinstance(value, str) and re.fullmatch(r"[a-fA-F0-9-]{36}", value):
+            st.session_state["visitor_id"] = value
+    except Exception:
+        LOGGER.exception("Inizializzazione identificativo visitatore fallita")
 
 
 # HEADER
@@ -1335,7 +1273,7 @@ st.markdown(
     """
     <div id="top_page"></div>
     <div class="brand-header-box">
-        <div class="brand-title-single">Scala dei Turchi</div>
+        <h1 class="brand-title-single">Scala dei Turchi</h1>
         <div class="brand-subtitle-single">
             <span class="badge-ai-pill">AI DEALS</span>
             <span class="brand-author">by <strong>Davide Marziano</strong></span>
@@ -1347,7 +1285,7 @@ st.markdown(
 
 active_tab = st.session_state.get("current_tab", "haul")
 
-# NAV PUBBLICA: HAUL / Vetrina / Cerca. Contatti resta nascosta.
+# NAV PUBBLICA: HAUL / Vetrina / Cerca.
 st.markdown("<div class='nav-wrap'>", unsafe_allow_html=True)
 nav1, nav2, nav3 = st.columns([1, 1, 1], gap="small")
 
@@ -1381,13 +1319,20 @@ with nav3:
 
 st.markdown("</div>", unsafe_allow_html=True)
 
+# Optional mobile guidance must not interrupt product browsing.
+try:
+    home_shortcut = components.declare_component(
+        "home_shortcut", path=str(Path(__file__).parent / "home_shortcut")
+    )
+    home_shortcut(key="home_shortcut_prompt", default=None)
+except Exception:
+    LOGGER.exception("Avviso schermata Home non disponibile")
+
 partner_tag = amazon_api.get_partner_tag()
 
 if not partner_tag:
-    st.error(
-        "Configurazione Amazon incompleta: aggiungi partner_tag e credenziali "
-        "Creators API nei Secrets di Streamlit."
-    )
+    LOGGER.error("Configurazione Amazon incompleta: partner_tag assente")
+    st.info("Le offerte sono temporaneamente non disponibili. Riprova tra poco.")
 
 active_tab = st.session_state.get("current_tab", "haul")
 st.markdown("<div class='tab-content-panel'>", unsafe_allow_html=True)
@@ -1547,8 +1492,10 @@ elif active_tab == "cerca":
     ):
         st.session_state["search_keyword_input"] = str(previous.get("keyword") or "")
 
+    _initialize_browser_identity()
+
     if not st.session_state.get("visitor_id"):
-        st.info("Preparazione della ricerca. Se l’attesa continua, abilita l’archiviazione del sito nel browser e ricarica la pagina.")
+        st.info("La ricerca non è ancora pronta. Puoi intanto consultare HAUL e Vetrina.")
     search_col, button_col = st.columns([5, 1])
 
     with search_col:
@@ -1612,6 +1559,8 @@ elif active_tab == "cerca":
             ),
             use_container_width=True,
         )
+        st.caption("Puoi continuare a consultare i risultati e scoprire altre idee in Vetrina.")
+        st.button("Scopri la Vetrina", key="quota_vetrina", on_click=open_vetrina)
     _watch_quota_expiry()
 
 
@@ -1735,13 +1684,15 @@ elif active_tab == "privacy":
 
     st.markdown(
         """
-        I dati inseriti nel modulo contatti vengono utilizzati esclusivamente
-        per rispondere alla richiesta inviata. Il sito può contenere collegamenti
-        esterni ad Amazon.it.
+        Il sito contiene collegamenti affiliati ad Amazon.it.
+        Gli acquisti idonei possono generare una commissione per il titolare del sito.
 
         Per applicare il limite orario delle ricerche, il browser conserva
         un identificatore casuale. Il server lo associa agli orari delle
         ricerche recenti; questo identificatore non richiede nome o email.
+
+        Il browser memorizza anche la chiusura dell’invito ad aggiungere il sito
+        alla schermata Home, per non riproporlo prima di tre giorni.
 
         """
     )
@@ -1751,60 +1702,12 @@ elif active_tab == "privacy":
         on_click=open_vetrina,
     )
 
-# Il ramo resta deliberatamente nel codice, ma non esiste alcun pulsante pubblico
-# che imposti current_tab="contatti".
-elif active_tab == "contatti":
-    st.subheader("Contatti")
-
-    if st.session_state.get("contact_sent_session"):
-        st.success("Messaggio già inviato in questa sessione.")
-
-    with st.form("contact_form", clear_on_submit=True):
-        name = st.text_input("Nome e cognome*")
-        phone = st.text_input("Telefono*")
-        user_email = st.text_input("Email*")
-        message = st.text_area("Messaggio*", height=120)
-        privacy_ack = st.checkbox("Ho letto l'informativa privacy.*")
-
-        send = st.form_submit_button(
-            "✉️ Invia messaggio",
-            use_container_width=True,
-            disabled=bool(st.session_state.get("contact_sent_session")),
-        )
-
-    if send:
-        valid, validation_message = validate_contact(
-            name,
-            phone,
-            user_email,
-            message,
-        )
-
-        if not valid:
-            st.error(validation_message)
-        elif not privacy_ack:
-            st.error("Conferma di aver letto l'informativa privacy.")
-        else:
-            with st.spinner("Invio in corso..."):
-                ok, error_message = send_contact_email(
-                    name.strip(),
-                    phone.strip(),
-                    user_email.strip(),
-                    message.strip(),
-                )
-
-            if ok:
-                st.session_state["contact_sent_session"] = True
-                st.success("Messaggio inviato correttamente.")
-            else:
-                st.error(error_message)
-
 st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown(
     """
     <div class="site-footer-box">
-        Prezzi e disponibilità possono variare su Amazon.<br>
+        In qualità di Affiliato Amazon io ricevo un guadagno dagli acquisti idonei.<br>
         <a href="?privacy=1" target="_self">Informativa privacy</a>
     </div>
     """,
@@ -1812,3 +1715,8 @@ st.markdown(
 )
 
 
+
+with st.expander("📲 Aggiungi alla schermata Home"):
+    st.markdown("**iPhone · Safari:** Condividi → Aggiungi alla schermata Home → Aggiungi.")
+    st.markdown("**Android · Chrome:** menu ⋮ → Aggiungi a schermata Home → conferma il collegamento.")
+    st.caption("Se navighi dentro un’altra app, apri prima il sito in Safari o Chrome. Il collegamento richiede Internet.")
