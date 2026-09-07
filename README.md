@@ -108,3 +108,7 @@ Avviso sui dispositivi mobili con istruzioni iPhone/Android. Dopo Non ora o Chiu
 
 ## Schede con immagine a sinistra
 Foto desktop da 254 px (prima 190), con proporzioni conservate e senza ritaglio. Testi, prezzi e azioni nella colonna destra; larghezza esterna invariata. Su mobile colonne 42/58 e altezza adattiva per mantenere leggibili i contenuti. Rimosse le etichette Link affiliato dalle singole schede, conservata la dichiarazione generale.
+
+
+## Revisione mobile 1–10
+Gerarchia mobile: titolo prodotto 16 px, prezzo 26 px, pulsante 15 px/48 px, dettagli 13–14 px. Nome completo e note consultabili in Dettagli. Colonne foto/contenuti 38/62; altezza adattiva. Promozioni, navigazione, ricerca, avviso Home e footer uniformati. Nessuna modifica a quote, cache o richieste Amazon. Verifiche automatiche locali; collaudo visivo sul telefono ancora necessario.

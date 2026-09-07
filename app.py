@@ -677,6 +677,56 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
         text-align: center;
     }
 }
+
+/* Mobile hierarchy: product, price, action, supporting information. */
+.pcm-more summary {cursor:pointer; padding:8px 0; color:#075985; font-size:14px;}
+.pcm-more p {font-size:14px; line-height:1.45; overflow-wrap:anywhere;}
+.pcm-savings {flex-basis:100%; color:#047857; font-size:14px; font-weight:700;}
+@media (max-width: 700px) {
+    .brand-header-box {padding:10px 8px !important;}
+    .brand-title-single {font-size:26px !important; line-height:1.15 !important;}
+    .brand-subtitle-single, .brand-author, .badge-ai-pill {font-size:12px !important;}
+    div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) button {
+        min-height:46px !important; font-size:15px !important; padding:7px 3px !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.st-key-nav_btn_haul) button p {font-size:15px !important;}
+    .product-card-modern {padding:8px;}
+    .pcm-top {grid-template-columns:minmax(0,38fr) minmax(0,62fr); gap:10px;}
+    .pcm-details {justify-content:flex-start;}
+    .pcm-title {font-size:16px; line-height:1.35; margin-bottom:6px;}
+    .pcm-prices {gap:6px; margin-top:8px;}
+    .pcm-price-final {font-size:26px; line-height:1.15; flex-basis:100%;}
+    .pcm-price-old {font-size:14px;}
+    .pcm-discount-badge {font-size:14px; padding:3px 6px;}
+    .pcm-note {font-size:13px; line-height:1.4; color:#475569;}
+    .sold-qty-pill, .sales-rank-pill, .prime-pill {font-size:13px; font-weight:600;}
+    .pcm-bottom-bar {gap:4px; margin-top:6px; padding-top:6px;}
+    .pcm-buy-btn-compact {font-size:15px; min-height:48px; width:100%; padding:8px 4px; line-height:1.25;}
+    .pcm-share {width:100%;}
+    .pcm-share summary {font-size:14px; padding:10px 0;}
+    .soc-chip {font-size:13px; min-height:44px; padding:0 10px;}
+    .pcm-more summary {min-height:44px; display:flex; align-items:center;}
+    .tab-content-panel h2, .vetrina-promo h2 {font-size:21px !important; line-height:1.3 !important;}
+    .haul-promo {padding:10px !important;}
+    .haul-promo > div:first-child {font-size:16px !important;}
+    .haul-promo > div:nth-child(2) {display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px !important;}
+    .haul-promo > div:nth-child(2) > div {min-width:0 !important; padding:8px !important;}
+    .haul-promo > div:nth-child(2) > div:first-child {grid-column:1 / -1; display:flex; justify-content:space-between; align-items:center; gap:6px;}
+    .haul-promo > div:nth-child(2) > div > div:first-child {font-size:20px !important;}
+    .haul-promo > div:nth-child(2) > div > div:last-child {font-size:14px !important;}
+    .haul-promo > div:last-child {font-size:13px !important; line-height:1.4;}
+    .vetrina-promo {padding:10px !important; margin-bottom:8px !important;}
+    .vetrina-promo > div {padding:8px !important; font-size:14px !important; line-height:1.4 !important;}
+    .vetrina-promo > div > div {font-size:16px !important; line-height:1.35 !important;}
+    .st-key-search_keyword_input input {font-size:16px !important; min-height:48px;}
+    .st-key-search_submit_button button {min-height:48px !important; font-size:16px !important;}
+    .st-key-search_sort label p, .st-key-search_prime_only label p {font-size:14px !important;}
+    div[data-testid="stAlert"] p {font-size:14px !important; line-height:1.45;}
+    div[data-testid="stCaptionContainer"] p {font-size:13px !important; line-height:1.4;}
+    .site-footer-box {font-size:13px; line-height:1.5; padding:10px;}
+    div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {font-size:13px !important; min-height:44px !important;}
+}
+
 </style>
 """
 
@@ -1093,12 +1143,12 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         if old_price is not None and math.isfinite(old_price) and old_price > final_price:
             old_html = (
                 f"<span class='pcm-price-old'>€{_format_eur(old_price)}</span>"
-                f"<span class='pcm-note'>Risparmi €{_format_eur(old_price - final_price)}</span>"
+                f"<span class='pcm-savings'>Risparmi €{_format_eur(old_price - final_price)}</span>"
             )
 
         price_html = (
-            f"{discount_html}"
             f"<span class='pcm-price-final'>€{_format_eur(final_price)}</span>"
+            f"{discount_html}"
             f"{old_html}"
         )
     else:
@@ -1222,7 +1272,10 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         f"<div class='pcm-note'><strong>{variant_label}</strong></div>"
         f"<div class='pcm-prices'>{price_html}</div>"
         f"<div class='pcm-badges-row'>{badges_html}</div>"
-        f"<div class='pcm-note'>{html.escape(note)}</div>"
+        "<details class='pcm-more'><summary>Dettagli</summary>"
+        f"<p>{safe_title}</p>"
+        f"<p>{html.escape(note)}</p>"
+        "</details>"
         "<div class='pcm-bottom-bar'>"
         f"<a class='pcm-buy-btn-compact' href='{safe_link}' "
         "target='_blank' rel='noopener noreferrer sponsored'>"
@@ -1353,7 +1406,7 @@ if active_tab == "haul":
         <h2 style='font-size:1.02rem;font-weight:900;color:#0369a1;
         margin:2px 0 5px 2px;'>🛍️ Amazon HAUL</h2>
 
-        <div style='background:linear-gradient(135deg,#fff7ed,#fffbeb);
+        <div class='haul-promo' style='background:linear-gradient(135deg,#fff7ed,#fffbeb);
         border:1px solid #fdba74;border-radius:10px;padding:9px 10px;
         margin:0 0 8px 0;color:#7c2d12;font-size:.72rem;line-height:1.45;'>
         <div style="font-size:.95rem;font-weight:900;color:#7c2d12;margin-bottom:8px;">I vantaggi Amazon Haul</div>
@@ -1427,7 +1480,7 @@ if active_tab == "haul":
 elif active_tab == "vetrina":
     st.markdown(
         """
-        <section style="background:linear-gradient(135deg,#fff7ed,#fffbeb);
+        <section class="vetrina-promo" style="background:linear-gradient(135deg,#fff7ed,#fffbeb);
         border:1px solid #fdba74;border-radius:12px;padding:12px;
         margin:2px 0 12px 0;">
           <h2 style="font-size:1.08rem;font-weight:900;color:#9a3412;
