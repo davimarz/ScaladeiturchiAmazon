@@ -404,19 +404,20 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
 }
 
 .pcm-top {
-    display: flex;
-    align-items: center;
+    display: grid;
+    grid-template-columns: minmax(0, 254px) minmax(0, 1fr);
+    align-items: stretch;
     gap: 11px;
 }
 
 .pcm-img-box {
-    width: 190px;
-    height: 190px;
-    min-width: 190px;
+    width: 100%;
+    height: 254px;
+    min-width: 0;
     background: #ffffff;
     border: 1px solid #bfdbfe;
     border-radius: 9px;
-    padding: 5px;
+    padding: 2px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -424,6 +425,8 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
 }
 
 .pcm-img-box img {
+    width: 100%;
+    height: 100%;
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
@@ -431,7 +434,9 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
 
 .pcm-details {
     min-width: 0;
-    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 
 .pcm-title {
@@ -630,23 +635,26 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
 
     .pcm-img-box {
         width: 100%;
-        height: 260px;
-        min-width: 100%;
+        height: 100%;
+        min-height: 254px;
+        min-width: 0;
         max-width: 100%;
-        padding: 8px;
+        padding: 2px;
+        position: relative;
     }
 
     .pcm-img-box img {
-        width: 100%;
-        height: 100%;
+        position: absolute;
+        inset: 2px;
+        width: calc(100% - 4px);
+        height: calc(100% - 4px);
         max-width: 100%;
         max-height: 100%;
         object-fit: contain;
     }
 
     .pcm-top {
-        flex-direction: column;
-        align-items: stretch;
+        grid-template-columns: minmax(0, 42fr) minmax(0, 58fr);
         gap: 8px;
     }
 
@@ -665,6 +673,8 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
 
     .pcm-buy-btn-compact {
         width: 100%;
+        padding: 8px 5px;
+        text-align: center;
     }
 }
 </style>
@@ -1213,14 +1223,11 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         f"<div class='pcm-prices'>{price_html}</div>"
         f"<div class='pcm-badges-row'>{badges_html}</div>"
         f"<div class='pcm-note'>{html.escape(note)}</div>"
-        "</div>"
-        "</div>"
         "<div class='pcm-bottom-bar'>"
         f"<a class='pcm-buy-btn-compact' href='{safe_link}' "
         "target='_blank' rel='noopener noreferrer sponsored'>"
         "🛒 Vedi offerta su Amazon"
         "</a>"
-        "<small>Link affiliato</small>"
         "<details class='pcm-share'><summary>Condividi</summary><div class='pcm-social-row'>"
         f"<a class='soc-chip soc-wa' href='{html.escape(share['wa'], quote=True)}' "
         "target='_blank' rel='noopener noreferrer'>WA</a>"
@@ -1231,6 +1238,8 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         f"<a class='soc-chip soc-mail' href='{html.escape(share['mail'], quote=True)}'>"
         "Mail</a>"
         "</div></details>"
+        "</div>"
+        "</div>"
         "</div>"
         "</div>"
     )
@@ -1251,7 +1260,6 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
                     label += " · Prezzo da verificare"
                 st.write(label)
                 st.link_button("Vedi questa variante su Amazon", variant["link_affiliato"])
-                st.caption("Link affiliato")
 
 
 

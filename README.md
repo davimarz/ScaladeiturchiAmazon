@@ -104,3 +104,7 @@ La ricerca mira a dieci gruppi distinti nei limiti esistenti. Carica altri 10 co
 
 ## Punto 11: collegamento alla schermata Home
 Avviso sui dispositivi mobili con istruzioni iPhone/Android. Dopo Non ora o Chiudi viene riproposto dalla prima visita successiva a 72 ore. Preferenza salvata nel browser; cancellare i dati del sito può far ricomparire l’avviso prima. Se l’archiviazione persistente è bloccata si usa quella di sessione quando disponibile. Nessuna chiamata Amazon aggiuntiva. Guida sempre disponibile nel footer. Caricare anche home_shortcut/index.html nel repository Streamlit. L’aggiunta resta manuale nel browser; non è un’installazione automatica. Verificare su iPhone e Android dopo il deploy.
+
+
+## Schede con immagine a sinistra
+Foto desktop da 254 px (prima 190), con proporzioni conservate e senza ritaglio. Testi, prezzi e azioni nella colonna destra; larghezza esterna invariata. Su mobile colonne 42/58 e altezza adattiva per mantenere leggibili i contenuti. Rimosse le etichette Link affiliato dalle singole schede, conservata la dichiarazione generale.
