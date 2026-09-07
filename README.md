@@ -59,3 +59,8 @@ Un risultato vuoto non viene segnalato come un generico ValueError. Se tutte le 
 ### Verifiche e limiti
 
 Sintassi e test locali su cache, concorrenza, quote, recupero progressivo, pertinenza, prezzi, Prime e diagnostica. HTTP e Streamlit sono simulati nei test: non equivalgono a una verifica end-to-end dell'interfaccia o dell'account Amazon. Prestazioni reali, persistenza del disco e localStorage devono essere verificati sul deployment effettivo. Non viene garantita accessibilità di Amazon dal server hosting.
+
+
+### Avvio dal prezzo crescente
+
+Ogni click su Cerca reimposta Prezzo minimo. Creators API usa Price:LowToHigh; tutte le varianti di ricerca web Amazon usano s=price-asc-rank. Anche il collegamento di ricerca diretto su Amazon richiede questo ordinamento. Rimane possibile riordinare localmente per quantità vendite dopo la ricerca. Le fonti esterne non garantiscono l'ordine globale Amazon: in quel caso sono ordinati soltanto i prezzi dei prodotti recuperati. Prezzi ignoti in fondo, senza promettere il minimo assoluto del catalogo o includere automaticamente le spese di spedizione.

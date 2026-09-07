@@ -767,6 +767,11 @@ def _sort_loaded_products(
     return ordered
 
 
+def _prepare_new_search() -> None:
+    # Il callback precede la creazione dei widget nel rerun.
+    st.session_state["search_sort"] = "Prezzo minimo"
+
+
 def _on_search_sort_change() -> None:
     """Callback immediato quando l'utente cambia l'ordinamento."""
     selected_sort = str(
@@ -1544,6 +1549,7 @@ elif active_tab == "cerca":
         submitted = st.button(
             "🔍 Cerca",
             key="search_submit_button",
+            on_click=_prepare_new_search,
             disabled=_session_limit_reached() or not st.session_state.get("visitor_id"),
             type="primary",
             use_container_width=True,

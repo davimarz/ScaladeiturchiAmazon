@@ -282,7 +282,7 @@ def build_amazon_search_link(
     """Crea una ricerca Amazon.it con il Partner Tag configurato."""
     tag = str(partner_tag or get_partner_tag()).strip()
     clean_keyword = " ".join(str(keyword or "").strip().split()) or "offerte"
-    query = {"k": clean_keyword}
+    query = {"k": clean_keyword, "s": "price-asc-rank"}
     if tag:
         query["tag"] = tag
     return f"https://www.amazon.it/s?{urlencode(query)}"
@@ -2189,7 +2189,7 @@ def _build_search_product_from_node(
     }
 
 
-def _amazon_search_urls(keyword: str, page: int) -> tuple[str, ...]:
+def _amazon_search_urls(keyword: str, page: int, sort_type: str = "Prezzo minimo") -> tuple[str, ...]:
     """Più forme equivalenti della ricerca Amazon.
 
     Amazon può servire markup differente a seconda dell'URL/referrer.
@@ -2211,6 +2211,8 @@ def _amazon_search_urls(keyword: str, page: int) -> tuple[str, ...]:
     ]
 
     # Mantieni ordine eliminando eventuali duplicati.
+    if sort_type == "Prezzo minimo":
+        variants = [url + "&s=price-asc-rank" for url in variants]
     return tuple(dict.fromkeys(variants))
 
 
@@ -2218,6 +2220,7 @@ def _amazon_search_urls(keyword: str, page: int) -> tuple[str, ...]:
 def _amazon_mobile_search_urls(
     keyword: str,
     page: int,
+    sort_type: str = "Prezzo minimo",
 ) -> tuple[str, ...]:
     """Endpoint Amazon mobile/lightweight, diverso dalla SERP desktop."""
     clean = " ".join(str(keyword or "").strip().split())
@@ -2230,6 +2233,8 @@ def _amazon_mobile_search_urls(
         + urlencode({"i": "aps", "k": clean, "page": page_num}),
     ]
 
+    if sort_type == "Prezzo minimo":
+        variants = [url + "&s=price-asc-rank" for url in variants]
     return tuple(dict.fromkeys(variants))
 
 def _fetch_search_html_urls(
@@ -2768,7 +2773,7 @@ def _search_html_fallback(
             break
 
         diagnostic_pages_attempted += 1
-        urls = _amazon_search_urls(clean_keyword, page)
+        urls = _amazon_search_urls(clean_keyword, page, sort_type)
         page_seen: set[str] = set()
 
         # ------------------------------------------------------------
@@ -2811,7 +2816,7 @@ def _search_html_fallback(
         # desktop viene filtrata dai sistemi anti-bot.
         # ------------------------------------------------------------
         mobile_pages = _fetch_search_html_urls(
-            _amazon_mobile_search_urls(clean_keyword, page),
+            _amazon_mobile_search_urls(clean_keyword, page, sort_type),
             keyword=clean_keyword,
             page=page,
             stage="mobile",
