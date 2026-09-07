@@ -1455,11 +1455,22 @@ if active_tab == "haul":
 elif active_tab == "vetrina":
     st.markdown(
         """
-        <h2 style='font-size:.94rem;font-weight:900;color:#0369a1;
-        margin:2px 0 2px 2px;'>🔥 Offerte in Vetrina</h2>
-        <p style='font-size:.70rem;color:#64748b;margin:0 0 7px 2px;'>
-        <strong style="display:block;font-size:1.05rem;color:#0369a1;margin-bottom:5px;">🔎 Meno ricerche, più scoperte</strong><span style="font-size:.85rem;color:#334155;">Parti dalla nostra Vetrina per trovare nuove idee per i tuoi acquisti.</span>
-        </p>
+        <section style="background:linear-gradient(135deg,#fff7ed,#fffbeb);
+        border:1px solid #fdba74;border-radius:12px;padding:12px;
+        margin:2px 0 12px 0;">
+          <h2 style="font-size:1.08rem;font-weight:900;color:#9a3412;
+          margin:0 0 10px 0;line-height:1.4;">🔥 Offerte in Vetrina</h2>
+          <div style="background:#eff6ff;border:2px solid #2563eb;
+          border-radius:10px;padding:12px;margin-bottom:8px;">
+            <div style="font-size:1.15rem;font-weight:900;color:#1e40af;
+            line-height:1.4;">🔎 Meno ricerche, più scoperte</div>
+          </div>
+          <div style="background:#ecfdf5;border:2px solid #059669;
+          border-radius:10px;padding:11px 12px;color:#065f46;
+          font-size:.9rem;line-height:1.6;">
+            Parti dalla nostra Vetrina per trovare nuove idee per i tuoi acquisti.
+          </div>
+        </section>
         """,
         unsafe_allow_html=True,
     )
