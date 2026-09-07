@@ -883,7 +883,22 @@ def _watch_quota_expiry():
         st.rerun()
 
 
+def _retry_remaining() -> int:
+    return max(0, math.ceil(st.session_state.get("search_retry_at", 0) - time.time()))
+
+
+@st.fragment(run_every="1s")
+def _watch_search_retry():
+    remaining = _retry_remaining()
+    if remaining:
+        st.info(f"Non riusciamo a mostrare i risultati in questo momento. Attendi {remaining} secondi e riprova.")
+    elif st.session_state.pop("search_retry_at", 0):
+        st.rerun()
+
+
 def _search_allowed() -> bool:
+    if _retry_remaining():
+        return False
     now = time.monotonic()
     if now < st.session_state.get("next_search_at", 0):
         st.session_state["search_notice"] = "Attendi un momento prima della prossima ricerca."
@@ -903,6 +918,11 @@ def _amazon_request(function, **kwargs):
     st.session_state["amazon_unavailable"] = False
     try:
         return function(**kwargs)
+    except amazon_api.shared_results.RetryPending as exc:
+        st.session_state["search_retry_at"] = exc.retry_at
+        st.session_state["search_notice"] = ""
+        st.session_state["amazon_unavailable"] = True
+        return None
     except amazon_api.api_budget.BudgetUnavailable as exc:
         LOGGER.info("Ricerca sospesa: %s", exc)
         st.session_state["amazon_unavailable"] = True
@@ -926,7 +946,6 @@ def _perform_search(target_count: int) -> None:
         )
 
     if results is None:
-        st.session_state["offerte"] = []
         st.session_state["has_searched"] = True
         return
     normalized_results = product_dedup.unique(results or [])
@@ -990,6 +1009,8 @@ def _load_more() -> None:
         )
 
     if new_results is None:
+        if _retry_remaining():
+            st.rerun()
         return
     merged = product_dedup.unique(existing + list(new_results or []))[:MAX_RESULTS]
     for index, product in enumerate(merged):
@@ -1572,7 +1593,7 @@ elif active_tab == "cerca":
             "🔍 Cerca",
             key="search_submit_button",
             on_click=_prepare_new_search,
-            disabled=_session_limit_reached() or not st.session_state.get("visitor_id"),
+            disabled=_session_limit_reached() or bool(_retry_remaining()) or not st.session_state.get("visitor_id"),
             type="primary",
             use_container_width=True,
         )
@@ -1590,6 +1611,16 @@ elif active_tab == "cerca":
         key="search_prime_only",
     )
 
+    if submitted:
+        deadline = amazon_api.search_retry_at(
+            keyword=str(st.session_state.get("search_keyword_input") or "").strip(),
+            sort_type=str(st.session_state.get("search_sort") or "Prezzo minimo"),
+            solo_spedizione_gratuita=bool(st.session_state.get("search_prime_only", False)),
+            item_count=10,
+        )
+        if deadline > time.time():
+            st.session_state["search_retry_at"] = deadline
+    previous_search = dict(st.session_state["last_search"])
     if submitted and _search_allowed():
         st.session_state["last_search"] = {
             "keyword": str(
@@ -1606,6 +1637,10 @@ elif active_tab == "cerca":
         st.session_state["item_count"] = 10
         st.session_state["no_more_results"] = False
         _perform_search(10)
+        if st.session_state.get("amazon_unavailable"):
+            st.session_state["last_search"] = previous_search
+            if _retry_remaining():
+                st.rerun()
 
     if _session_limit_reached():
         st.info(SEARCH_LIMIT_NOTICE)
@@ -1623,6 +1658,8 @@ elif active_tab == "cerca":
         st.caption("Puoi continuare a consultare i risultati e scoprire altre idee in Vetrina.")
         st.button("Scopri la Vetrina", key="quota_vetrina", on_click=open_vetrina)
     _watch_quota_expiry()
+    if _retry_remaining():
+        _watch_search_retry()
 
 
     results = product_dedup.unique(st.session_state.get("offerte", []))
@@ -1682,6 +1719,7 @@ elif active_tab == "cerca":
             use_container_width=True,
             disabled=(
                 len(results) >= MAX_RESULTS
+                or bool(_retry_remaining())
                 or _session_limit_reached()
                 or bool(st.session_state.get("no_more_results", False))
             ),
@@ -1731,6 +1769,7 @@ elif active_tab == "cerca":
 
     elif (
         st.session_state.get("has_searched")
+        and not _retry_remaining()
         and not st.session_state.get("search_notice")
     ):
         st.warning(

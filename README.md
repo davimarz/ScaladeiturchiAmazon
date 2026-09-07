@@ -112,3 +112,7 @@ Foto desktop da 254 px (prima 190), con proporzioni conservate e senza ritaglio.
 
 ## Revisione mobile 1–10
 Gerarchia mobile: titolo prodotto 16 px, prezzo 26 px, pulsante 15 px/48 px, dettagli 13–14 px. Nome completo e note consultabili in Dettagli. Colonne foto/contenuti 38/62; altezza adattiva. Promozioni, navigazione, ricerca, avviso Home e footer uniformati. Nessuna modifica a quote, cache o richieste Amazon. Verifiche automatiche locali; collaudo visivo sul telefono ancora necessario.
+
+
+## Recupero temporaneamente non disponibile
+La ricerca propaga la scadenza della cache al conto alla rovescia. Durante l’attesa i comandi di ricerca sono bloccati senza consumare quota. Nessun recupero automatico alla scadenza. Conservati i risultati precedenti; un recupero vuoto non viene interpretato come assenza certa di prodotti.

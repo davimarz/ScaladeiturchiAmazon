@@ -3102,7 +3102,7 @@ def _get_items_cached(
     return tuple(item for item in items if isinstance(item, dict))
 
 
-def ottieni_offerte_avanzate(*args, **kwargs):
+def _search_cache_arguments(*args, **kwargs):
     bound = inspect.signature(_offerte_uncached).bind(*args, **kwargs)
     bound.apply_defaults()
     values = bound.arguments
@@ -3111,7 +3111,17 @@ def ottieni_offerte_avanzate(*args, **kwargs):
     values["_cache_buster"] = None
     values["_partner_tag_override"] = get_partner_tag() or values["_partner_tag_override"]
     key = ("search", repr(sorted(values.items())))
-    return shared_results.get(key, 600, lambda: _offerte_uncached(**values), stale_for=0)
+    return key, values
+
+
+def search_retry_at(**kwargs):
+    key, _ = _search_cache_arguments(**kwargs)
+    return shared_results.retry_at(key)
+
+
+def ottieni_offerte_avanzate(*args, **kwargs):
+    key, values = _search_cache_arguments(*args, **kwargs)
+    return shared_results.get(key, 600, lambda: _offerte_uncached(**values), stale_for=0, report_failure=True)
 
 
 def _offerte_uncached(

@@ -5,6 +5,17 @@ import threading
 import time
 from collections import OrderedDict
 
+class RetryPending(Exception):
+    def __init__(self, retry_at):
+        self.retry_at = retry_at
+        super().__init__("Recupero temporaneamente non disponibile")
+
+
+def retry_at(key):
+    with _lock:
+        return _entries.get(key, {}).get("retry_at", 0)
+
+
 class EmptyResult(Exception):
     pass
 
@@ -15,13 +26,15 @@ _running = set()
 _changed = threading.Condition(_lock)
 
 
-def get(key, ttl, loader, retry=30, stale_for=900):
+def get(key, ttl, loader, retry=30, stale_for=900, report_failure=False):
     with _changed:
         wait_until = time.monotonic() + 20
         while key in _running:
             remaining = wait_until - time.monotonic()
             if remaining <= 0:
                 entry = _entries.get(key)
+                if report_failure:
+                    raise RetryPending(time.time() + 1)
                 return _stale(entry, time.time(), stale_for) if entry else []
             _changed.wait(timeout=min(1, remaining))
         now = time.time()
@@ -29,6 +42,8 @@ def get(key, ttl, loader, retry=30, stale_for=900):
         if entry and now < entry['expires']:
             return copy.deepcopy(entry['data'])
         if entry and now < entry.get('retry_at', 0):
+            if report_failure:
+                raise RetryPending(entry['retry_at'])
             return _stale(entry, now, stale_for)
         _running.add(key)
     try:
@@ -53,6 +68,8 @@ def get(key, ttl, loader, retry=30, stale_for=900):
             _running.discard(key)
             _trim()
             _changed.notify_all()
+        if report_failure:
+            raise RetryPending(entry["retry_at"]) from exc
         return result
     with _changed:
         _entries[key] = {'data': copy.deepcopy(data), 'expires': time.time()+ttl}
