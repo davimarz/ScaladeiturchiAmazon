@@ -1,393 +1,61 @@
-# Scala dei Turchi – Amazon Streamlit
+# Scala dei Turchi — applicazione Amazon
 
-Web app Streamlit con ricerca Amazon, Vetrina, paginazione e schede prodotto.
+## Versione corrente
 
-## Flusso dati
+Applicazione Streamlit con HAUL, Vetrina e ricerca di prodotti Amazon. Questa documentazione descrive esclusivamente il comportamento attuale.
 
-1. Creators API viene tentata per prima.
-2. In caso di `AssociateNotEligible` il backend attiva un circuit breaker di 15 minuti e usa il fallback HTML senza ripetere 403 a ogni ricerca.
-3. Il fallback HTML trova ASIN/titolo/immagine.
-4. Il prezzo viene verificato sulla pagina dettaglio `corePrice` prima di essere mostrato.
-5. `Carica altri 10` recupera solo ASIN nuovi: non rivalida i prodotti già caricati.
+### HAUL e Vetrina
 
-## Ottimizzazioni V14
-
-- un solo tentativo `curl_cffi` + un fallback `requests`;
-- keep-alive HTTP con Session per thread;
-- cache HTML ricerca limitata a 24 pagine;
-- cache compatta del prezzo dettaglio (non conserva tutto l'HTML prodotto);
-- cache e stato condiviso protetti da lock;
-- circuit breaker Creators API dopo 403 `AssociateNotEligible`;
-- caricamento incrementale reale di +10 prodotti;
-- nessuna riapertura delle pagine dettaglio già caricate;
-- prezzo HTML non considerato verificato finché il `corePrice` dettaglio non è stato letto.
-
-## File
-
-- `app.py` – UI e stato Streamlit
-- `amazon_api.py` – Creators API + fallback HTML
-- `requirements.txt` – dipendenze
-- `.gitignore` – esclude secrets/cache/file locali
-
-Le credenziali devono restare nei Secrets di Streamlit Cloud e non nel repository.
-
-
-## V15 - correzione prezzo SERP + verifica dettaglio
-
-È stata integrata la parte valida della proposta Base44:
-
-- il prezzo attuale SERP privilegia `data-a-color="base"`;
-- `.a-text-price` è escluso da tutti i selettori del prezzo attuale;
-- il prezzo barrato viene cercato solo in `.a-price.a-text-price`
-  o `data-a-strike="true"`;
-- `old_price` parte da `None`, non dal prezzo finale;
-- whole/fraction vengono letti solo dentro il nodo prezzo corrente.
-
-La logica V14/V13 sulla pagina dettaglio resta però prioritaria:
-- il prezzo definitivo arriva da `corePrice` / `apexPriceToPay`;
-- il prezzo SERP non è mai marcato come verificato;
-- se la pagina dettaglio non è verificabile, il prezzo SERP non viene
-  mostrato come prezzo certo.
-
-Questa combinazione è più robusta del solo fix SERP.
-
-
-## V16 - Circuit breaker 403 a 60 minuti
-
-Quando Creators API risponde `403 AssociateNotEligible`, il backend:
-- passa subito al fallback HTML;
-- non ripete chiamate Creators API per 60 minuti;
-- dopo 60 minuti prova automaticamente di nuovo;
-- appena una chiamata API torna a rispondere 200, il blocco viene azzerato.
-
-
-## V17 - velocità, vetrina resiliente e immagini grandi
-
-### Vetrina
-- massimo 3 prodotti per apertura più rapida;
-- fino a 5 keyword alternative a rotazione;
-- si ferma appena trova almeno un prodotto reale;
-- fallback generici `offerte amazon` / `offerte del giorno`;
-- se un refresh fallisce mantiene la precedente vetrina valida della sessione.
+- HAUL: selezione condivisa per 60 secondi dal caricamento completato. Un refresh prima della scadenza riutilizza i prodotti. Recupero dalla pagina web HAUL.
+- Vetrina: selezione condivisa per 600 secondi, aggiornata alla prima visita dopo la scadenza. Non esiste un job che interroga Amazon senza visitatori.
+- Un solo caricamento per chiave nel processo. Gli altri visitatori attendono al massimo 20 secondi; poi ricevono eventuali schede precedenti o nessun risultato.
+- Dopo un errore: pausa di 30 secondi prima di riprovare. Schede precedenti conservate al massimo 15 minuti dopo la scadenza, senza prezzo e sconto. La selezione nuova può coincidere con la precedente se il catalogo è limitato.
 
 ### Ricerca
-- verifiche prezzo parallele: 4 -> 8;
-- timeout HTML: 8s -> 5s;
-- snapshot dettaglio: 75s -> 120s;
-- caricamento +10 incrementale invariato;
-- circuit breaker 403: 60 minuti invariato.
 
-### Immagini
-- mobile: 126x126 -> 100% x 260px, layout verticale;
-- desktop: 160x160 -> 190x190;
-- preferenza per `data-a-dynamic-image` e `srcset` ad alta risoluzione;
-- prima immagine visibile: eager loading + priorità alta.
+- Creators API prima scelta; fallback web in modalità hybrid. La cache completa dura 10 minuti, distinta per termini, filtri, ordinamento, quantità e ASIN esclusi.
+- Cerca e Carica altri 10 consumano un tentativo del limite personale. Pagina 1/Pagina 2 e ordinamento locale non consumano richieste personali.
+- I risultati API vengono cercati fino al limite di 10 pagine. Il recupero HTML prosegue fino al target con al massimo 5 pagine e 50 candidati pertinenti, con controllo del tempo tra i batch a 90 secondi. Le operazioni già in corso possono terminare oltre tale tempo.
+- Un elenco parziale indica solo i prodotti recuperati, non l'intero catalogo. Mancanza di risposte, filtri e budget possono impedire di raggiungere il target.
+- La pertinenza è un controllo lessicale conservativo con alcuni sinonimi. Non è un classificatore universale. Una ricerca di marchio non viene limitata a una sola categoria. La parola offerte non disattiva il controllo del marchio.
 
+### Prezzi e Prime
 
-## V18 - messaggio prezzo non verificato
+- Prezzo API dalla stessa offerta selezionata; prezzo web verificato nel dettaglio. Sconto calcolato solo da una coppia di prezzi confrontabili. Se il prezzo barrato del widget è ambiguo, viene omesso.
+- Il prezzo di riferimento non prova un precedente prezzo storico. Variante, destinazione, abbonamento e condizioni Amazon possono influenzare quanto appare al cliente.
+- Solo prodotti Prime: serve un badge nel blocco consegna del dettaglio. Non basta una citazione nel titolo o nella navigazione. Se non verificabile, il prodotto viene escluso.
+- Quando la pagina dettaglio è già stata letta, l'evidenza Prime viene riutilizzata per evitare un secondo download immediato. La verifica può richiedere traffico web aggiuntivo; i selettori potrebbero non riconoscere nuovi layout Amazon.
 
-Il messaggio:
-`Prezzo non verificabile con certezza dalla pagina prodotto.`
+### Limite personale
 
-è stato sostituito con:
-`Il prezzo può cambiare frequentemente: verifica quello aggiornato direttamente dal link Amazon.`
+10 tentativi negli ultimi 60 minuti, configurabili con searches_per_hour. Il conteggio avviene prima della richiesta e include tentativi senza risultati. I click respinti durante la pausa di 5 secondi non consumano un tentativo.
 
-
-## V19 - pagina Amazon HAUL
+Il componente locale browser_identity conserva un UUID in localStorage. Il server conserva gli orari recenti in SQLite. Refresh e sessioni dello stesso browser condividono il limite; cancellare i dati del sito o cambiare browser può aggirarlo. Non è autenticazione personale.
 
-- nuova prima scheda di navigazione: `HAUL`;
-- ordine navigazione: `HAUL -> Vetrina -> Cerca`;
-- tre pulsanti forzati su una sola riga anche su smartphone;
-- lettura prodotti da `https://www.amazon.it/haul/store`;
-- fino a 10 prodotti casuali reali per apertura/refresh;
-- il set precedente viene escluso quando il pool HAUL contiene abbastanza
-  prodotti differenti;
-- se Amazon blocca temporaneamente il fetch, viene mantenuta la selezione
-  HAUL valida precedente della sessione;
-- immagini ad alta risoluzione e layout mobile V17/V18 mantenuti.
+Continua su AMAZON nella ricerca appare solo al limite. Il controllo di scadenza ogni 15 secondi mentre Cerca è attiva non chiama Amazon. Se browser storage o database non sono disponibili, nuove ricerche personali non partono.
 
-### Condizioni Haul riportate in UI
-Sono state usate le condizioni pubblicate ufficialmente da Amazon:
-- consegna gratuita da 15 EUR;
-- 5% sugli ordini oltre 30 EUR;
-- 10% sugli ordini oltre 50 EUR.
+### Budget globale e hosting
 
-Le soglie non vengono presentate come legate al numero di articoli, perché
-la documentazione Amazon verificata le esprime in valore dell'ordine.
+- daily_request_budget: 800 tentativi catalogo al giorno UTC per impostazione predefinita, inclusi retry. È una soglia locale, NON la quota reale assegnata da Amazon. Configurarla con margine rispetto alla propria quota.
+- request_interval_seconds: minimo 1,1 secondi tra prenotazioni. Attesa massima di 5 secondi per il turno API.
+- Il database .runtime/api_usage.sqlite3 richiede disco scrivibile e persistente. Non eliminarlo per azzerare i contatori. OAuth ha limiti separati dal budget catalogo.
+- Cache in memoria condivisa nello stesso processo. Contatori condivisi tra processi solo se usano lo stesso database. Per repliche con dischi separati occorrono cache e contatori centralizzati; non è una configurazione multi-server pronta.
+- Ispezione contatore: python api_budget.py --limit 800. Usare il limite configurato. I log tecnici restano sul server.
 
+### Configurazione e installazione
 
-## V20 - correzione consegna gratuita Amazon Haul
+Caricare tutti i file e le sottocartelle dello ZIP. Avvio: streamlit run app.py. Installare requirements.txt. Conservare le proprie credenziali nei Secrets; secrets.example.toml non contiene credenziali utilizzabili.
 
-Aggiornata la descrizione HAUL:
-- 3 o più articoli: consegna gratuita;
-- le percentuali 5% / 10% restano indicate come condizioni promozionali da
-  verificare direttamente su Amazon finché non vengono confermate con evidenza
-  specifica per 4 e 5 articoli.
+Campi nella sezione amazon_api: partner_tag, credential_id, credential_secret, credential_version, daily_request_budget, request_interval_seconds, searches_per_hour, data_source_mode.
 
+Modalità hybrid predefinita: recupero web disponibile. api_only disabilita il fallback generale e HAUL; il filtro Prime richiesto rimane una verifica web del dettaglio. Il vecchio enable_html_fallback viene ignorato. application_id resta un campo descrittivo, non viene inviato per ottenere il token.
 
-## V21 - regole complete Amazon Haul
+### Diagnostica
 
-Aggiornata la descrizione promozionale della pagina HAUL:
-- 3 articoli: consegna gratuita;
-- 4 articoli: 5% di sconto;
-- 5 o più articoli: 10% di sconto.
+Errori API: operation, http e cause indicano lo stadio fallito. Risposte esterne ricevute non equivalgono a prodotti estratti. HTTP 202 è pending; pagine riconosciute come verifica/consenso vengono scartate. Non vengono salvati token, payload OAuth o HTML integrale nei log.
 
-Resta visibile una nota che invita a verificare le condizioni aggiornate
-direttamente su Amazon Haul, perché le promozioni possono cambiare.
+Un risultato vuoto non viene segnalato come un generico ValueError. Se tutte le fonti falliscono, il programma non inventa schede o prezzi.
 
+### Verifiche e limiti
 
-## V22 - ricerca Amazon più robusta
-
-Correzioni principali:
-- `_search_html_fallback` non è più cacheato come risultato completo:
-  un fallimento temporaneo/zero risultati non resta bloccato in cache;
-- l'HTML valido continua a essere cacheato normalmente;
-- per ogni pagina vengono provate in parallelo 3 forme equivalenti della
-  ricerca Amazon (`k`, `i=aps`, `search-alias=aps`);
-- parser di emergenza indipendente da `s-search-result` / `data-asin`:
-  cerca direttamente i link `/dp/ASIN` e ricostruisce la card dal contenitore;
-- titolo recuperabile anche da `aria-label`, attributo `title`, testo link
-  o `alt` dell'immagine;
-- merge degli ASIN trovati dalle diverse varianti senza duplicati;
-- prezzo e verifica detail/corePrice V21 rimangono invariati;
-- circuit breaker 403 resta a 60 minuti.
-
-Questo intervento è mirato soprattutto a query comuni come `notebook`,
-nelle quali Amazon può servire un markup differente tra una richiesta e l'altra.
-
-
-## V23 - fetch Amazon resiliente
-
-Integrazione ragionata dei suggerimenti Base44:
-
-- HTML timeout aumentato da 5 a 10 secondi;
-- marker CAPTCHA/blocco aggiunti anche in italiano;
-- curl_cffi usa `chrome` come fingerprint principale;
-- `safari` viene provato soltanto quando Chrome ha ricevuto una risposta
-  bloccata/inutilizzabile, non dopo un timeout, per evitare ritardi eccessivi;
-- Requests Session resta l'ultimo fallback;
-- controllo di sanità della SERP compatibile anche con il parser V22:
-  accetta i vecchi marker oppure link `/dp/` e `/gp/product/`;
-- log diagnostici con lunghezza HTML, senza credenziali;
-- stato pubblico `get_search_diagnostics()` per distinguere fetch bloccato,
-  markup non leggibile e reale assenza di risultati;
-- messaggio utente differenziato e senza mostrare 403 o dettagli tecnici.
-
-La logica di verifica prezzi corePrice/apexPriceToPay non è stata modificata.
-
-
-## V24 - ricerca adattiva orientata a 10 prodotti
-
-Strategia nuova:
-
-1. Creators API resta prima scelta, con circuit breaker 403 a 60 minuti.
-2. Nel fallback HTML viene richiesta prima una sola URL principale.
-3. Se quella URL produce già 10 ASIN unici, non vengono fatte altre richieste SERP.
-4. Solo se mancano prodotti vengono scaricate due URL alternative in parallelo.
-5. Se la prima pagina non contiene alcun segnale prodotto, viene fatto un solo
-   retry controllato dopo 0,8 secondi.
-6. Se anche il recovery non vede prodotti, la scansione si ferma invece di
-   martellare inutilmente pagine 2/3/4 dello stesso IP bloccato.
-7. La discovery raccoglie prima fino a 10 prodotti reali.
-8. Solo dopo vengono verificate le pagine dettaglio/prezzi.
-9. Le verifiche dettaglio usano massimo 5 worker e timeout 7 secondi, per
-   ridurre il rischio di anti-bot rispetto a 8 richieste simultanee.
-10. La SERP ha timeout 12 secondi per tollerare latenza Streamlit Cloud.
-
-Obiettivo: massimizzare la probabilità di ottenere i 10 prodotti richiesti
-con meno richieste simultanee e una sequenza adattiva, non con brute force.
-
-
-## V25 - discovery multistadio
-
-Quando Creators API è nel circuit breaker 403, la ricerca segue ora:
-
-1. Amazon Search desktop principale;
-2. due varianti desktop solo se servono;
-3. Amazon mobile/lightweight `/gp/aw/s`;
-4. retry controllato della prima pagina;
-5. come ultima risorsa, un indice web esterno viene usato esclusivamente
-   per scoprire URL/ASIN `amazon.it`;
-6. gli ASIN trovati esternamente vengono poi arricchiti tramite la pagina
-   prodotto Amazon: titolo, immagine principale, prezzo e social proof.
-
-La fonte finale dei dati prodotto resta quindi Amazon; la ricerca esterna
-serve soltanto a recuperare gli URL quando l'endpoint Search di Amazon è
-bloccato dal datacenter Streamlit.
-
-Altre modifiche:
-- snapshot dettaglio include ora titolo e immagine principale;
-- `#productTitle`, `#landingImage`, `data-old-hires`, dynamic image e OpenGraph
-  vengono usati per arricchire schede scoperte senza SERP;
-- target sempre 10 prodotti, fermandosi appena raggiunto.
-
-
-## V26 - ricerca resiliente a 503 / challenge Streamlit
-
-Basata sui log reali del 2026-09-06:
-- Amazon Search restituiva HTTP 503 con body ~2 KB;
-- alcune risposte HTTP 200 erano shell da ~2.3 KB senza link prodotto;
-- DuckDuckGo andava in ConnectTimeout.
-
-Modifiche:
-- le pagine Search 200 senza segnali `/dp/`, `data-asin`, ecc. non vengono più cacheate;
-- dopo 2 fallimenti Search consecutivi si apre un circuit breaker HTML di 10 minuti;
-- mentre il breaker è aperto si saltano desktop/mobile Amazon Search e si passa subito al discovery esterno;
-- discovery esterno parallelo: Bing RSS + Google HTML + DuckDuckGo HTML;
-- timeout esterno 6 secondi: i tre provider vengono interrogati insieme, non in sequenza;
-- parser dei redirect Google/DDG/Bing verso URL `amazon.it`;
-- vengono accettati solo ASIN reali estratti da URL Amazon;
-- le pagine prodotto Amazon continuano ad arricchire titolo, immagine e prezzo;
-- Creators API circuit breaker resta a 60 minuti.
-
-
-## V27 - fix NameError html_lib
-
-Corretto il crash:
-`NameError: name 'html_lib' is not defined`
-
-La funzione `_external_amazon_url()` usa `html_lib.unescape(...)`;
-ora `amazon_api.py` importa correttamente:
-
-```python
-import html as html_lib
-```
-
-Nessuna altra logica di ricerca è stata modificata.
-
-
-## V28 - recupero immagini e pagine dettaglio
-
-Correzioni:
-- dettaglio desktop Amazon come primo tentativo;
-- fallback dettaglio mobile `/gp/aw/d/ASIN`;
-- merge di prezzo, titolo, immagine e quantità acquistate;
-- snapshot completamente vuoto non viene più memorizzato;
-- snapshot parziale resta in cache solo 30 secondi;
-- verifiche dettaglio ridotte a 3 worker;
-- prodotti scoperti esternamente ricevono fallback immagine Amazon da ASIN;
-- il browser prova più URL immagine prima del segnaposto grafico.
-
-La verifica prezzo resta rigorosa: un prezzo non confermato dalla pagina
-prodotto non viene mostrato come prezzo certo.
-
-
-## V29 - nuove credenziali Amazon Creators API
-
-Configurazione aggiornata per il nuovo set di credenziali:
-- applicazione: `scaladeitruchi`;
-- Application ID configurabile nei Secrets;
-- Credential ID / Credential Secret letti dai nomi ufficiali del CSV Amazon;
-- Credential Version: `3.2`;
-- per versione 3.2 il codice seleziona automaticamente
-  `https://api.amazon.co.uk/auth/o2/token`;
-- Partner Tag: `eiapromo-21`.
-
-### Sicurezza
-Le credenziali reali NON sono incluse nel pacchetto GitHub.
-Usare il file separato `streamlit_secrets_new.toml` esclusivamente in:
-Streamlit Cloud -> Manage app -> Settings -> Secrets.
-
-Non caricare `streamlit_secrets_new.toml` nel repository GitHub pubblico.
-
-
-## Revisione - paginazione, filtri e acquisti mensili
-
-- Il caricamento incrementale può proseguire fino al limite di 10 pagine API, fermandosi al raggiungimento del numero richiesto. GetItems non viene richiamato per gli ASIN già caricati.
-- Il fallback HTML applica nuovamente i limiti di prezzo dopo la verifica dettaglio. Con filtro Prime attivo esclude i prodotti senza conferma Prime, inclusi quelli scoperti tramite indici esterni. I risultati possono quindi essere meno del numero richiesto.
-- Gli acquisti mensili recuperati dal dettaglio vengono conservati anche quando il prezzo non è disponibile.
-- Verifica: sintassi Python e controlli di regressione con risposte simulate; nessuna chiamata Amazon reale o verifica completa dell'interfaccia.
-
-
-## Gestione consumi - configurazione attuale
-
-Questa sezione sostituisce le indicazioni precedenti su refresh Vetrina e fallback automatico.
-
-- Vetrina condivisa per finestre UTC di 30 minuti, aggiornata alla prima visita della finestra. Riaprire la scheda non forza richieste. Non è un job in background.
-- Ricerche API condivise in cache per 10 minuti, con normalizzazione di spazi e maiuscole. Dettagli GetItems in cache per 10 minuti. Cache condivisa tra sessioni dello stesso processo; le diverse combinazioni di filtri e pagine hanno chiavi separate.
-- Budget locale predefinito: 800 tentativi catalogo al giorno UTC, inclusi retry/errori. NON è la quota Amazon verificata. Configurare daily_request_budget nei Secrets in base alla propria quota, mantenendo un margine. 0 disabilita nuove chiamate; la cache valida resta utilizzabile.
-- Frequenza globale: almeno 1,1 secondi tra prenotazioni di chiamate; dopo 5 secondi di attesa il cliente viene invitato a riprovare. Pausa di 5 secondi tra ricerche nella stessa sessione (non è un sistema anti-abuso per identità/IP).
-- api_budget.py conserva contatori e frequenza in .runtime/api_usage.sqlite3 usando transazioni SQLite. Tutti i processi che condividono questo file condividono il budget. Il contatore include solo questa installazione, non altri siti con le stesse credenziali. Gli endpoint OAuth hanno limiti separati e non sono inclusi nel contatore catalogo.
-- Riavviare il processo conserva il contatore se il disco resta disponibile. Redeploy, disco effimero o repliche con filesystem separati NON garantiscono un budget unico: per questi casi occorre un archivio centrale persistente. Non eliminare .runtime per azzerare i limiti.
-- Se il contatore non è accessibile, nuove chiamate vengono bloccate. Per leggere il contatore amministrativo sul server: `python api_budget.py --limit 800` (usare il valore configurato). I consumi sono anche nei log del server; non vengono mostrati ai clienti.
-- Fallback HTML disabilitato per impostazione predefinita. HAUL apre direttamente Amazon; ricerca e vetrina offrono un link alternativo quando non disponibili. Riattivare enable_html_fallback comporta richieste web aggiuntive non conteggiate come Creators API.
-- Un esaurimento budget/errore temporaneo non viene memorizzato come ricerca vuota. Il caricamento aggiuntivo conserva i risultati precedenti se fallisce. Il budget non viene interrogato prima della cache: i dati validi possono ancora essere serviti senza nuove chiamate.
-
-### Installazione dei file aggiornati
-Sostituire app.py e amazon_api.py, aggiungere api_budget.py e mantenere le proprie credenziali nei Secrets. Il file .streamlit/secrets.example.toml contiene solo un esempio; non sostituisce i Secrets reali. Il processo necessita di scrittura nella sottocartella .runtime. Le dipendenze sono elencate in requirements.txt; curl_cffi è opzionale e non necessario con HTML disabilitato.
-
-### Verifica
-Controlli locali con risposte HTTP e Streamlit simulati; nessuna richiesta reale Amazon. Quota reale e funzionamento sul proprio hosting devono essere verificati prima della diffusione ai clienti.
-
-
-## Correzione modalità ibrida (versione corrente)
-
-Questa sezione sostituisce le precedenti indicazioni sulla disattivazione del web.
-- La modalità predefinita è `data_source_mode = "hybrid"`: API prima scelta, ricerca HTML Amazon e discovery esterno quando API fallisce o raggiunge il budget; prezzi verificati sul dettaglio Amazon.
-- Il vecchio `enable_html_fallback = false` viene ignorato per correggere la regressione anche nei Secrets già configurati. Per disattivare il web usare esplicitamente `data_source_mode = "api_only"`.
-- HAUL torna a leggere la pagina web Amazon. Non dipende dalla disponibilità Creators API.
-- Errori SearchItems, non idoneità e limite locale non interrompono più il passaggio al web. Se GetItems fallisce si conservano i metadati SearchItems e si tenta la verifica web del dettaglio.
-- Vetrina e HAUL non memorizzano i fallimenti come risultati vuoti nella cache; un nuovo click permette di riprovare. Restano la vetrina condivisa e le cache delle risposte valide.
-- Il budget di 800 richieste riguarda solo Creators API. Il web usa le cache, i timeout e i circuit breaker già presenti, ma non garantisce accessibilità: Amazon può bloccare anche queste richieste dal server di hosting. Nessun prodotto o prezzo viene inventato quando tutte le fonti falliscono.
-- Installare anche curl_cffi da requirements.txt. Nessuna nuova credenziale richiesta.
-
-
-## Limite ricerche e testi cliente
-
-- `searches_per_session = 10` nei Secrets limita Cerca e Carica altri 10 nella singola sessione Streamlit. Ogni tentativo ammesso conta, anche se non trova prodotti o incontra un errore; click respinti durante la pausa di 5 secondi non contano.
-- Ordinamento, paginazione locale e link Amazon non consumano ricerche. Vetrina e HAUL non consumano questo contatore; restano soggetti alle rispettive cache e al budget API globale.
-- Al limite i pulsanti di ricerca/caricamento sono disabilitati, i risultati restano consultabili e compare un messaggio breve con il pulsante Amazon. Il collegamento usa il termine attualmente inserito.
-- Il limite è per sessione, NON identifica un cliente: nuove sessioni o riconnessioni che perdono lo stato possono azzerarlo. Per un limite per persona persistente occorrono autenticazione e contatore associato all'account. Il budget API globale rimane la protezione comune.
-- Rimossi i dettagli pubblici su cache, parser e fonti tecniche dei prezzi; le informazioni diagnostiche restano nei log del server.
-
-
-## Versione corrente: cache condivise e limite orario browser
-
-Questa sezione sostituisce le durate e il limite per sessione descritti sopra.
-
-- Vetrina: 600 secondi dal completamento del caricamento. HAUL: 60 secondi dal completamento; refresh e nuove visite entro il minuto ricevono la stessa selezione. Alla scadenza si recupera alla prima visita, senza job periodico Amazon. Non è garantito che la nuova selezione sia diversa se il catalogo offre pochi prodotti.
-- Ricerca: cache completa 600 secondi, chiave per termine normalizzato, filtri, ordinamento, quantità e ASIN esclusi. Un solo recupero simultaneo per chiave nello stesso processo; ricerche differenti indipendenti.
-- In caso di errore, pausa condivisa di 30 secondi. Vetrina/HAUL possono conservare le schede precedenti per massimo 15 minuti dopo la scadenza, con prezzi e sconti nascosti. Dopo questo intervallo nessuna scheda vecchia viene servita. I fallimenti sono nei log.
-- Budget API globale invariato. Cache condivisa in memoria dello stesso processo: un riavvio la perde. Per repliche/server separati occorre centralizzarla; il contatore SQLite è condiviso soltanto dove il file è comune e persistente.
-- Limite `searches_per_hour = 10` per browser negli ultimi 3600 secondi, con prenotazione atomica prima di Cerca/Carica altri 10. Tentativi ammessi consumano una ricerca anche se senza risultati; ordinamento, navigazione locale, HAUL e Vetrina non consumano il limite personale.
-- `browser_identity/index.html` è un componente locale che conserva un UUID casuale in localStorage. Nessun provider esterno, email o IP. L'identificatore persiste nel browser; cancellare i dati del sito o usare un altro browser può aggirarlo. Se storage browser o database non disponibili, la ricerca personale non parte. Il contatore non è una forma di autenticazione.
-- Il pulsante Continua su AMAZON nella scheda Cerca è visibile soltanto a limite raggiunto. Scompare appena si libera una ricerca, controllando ogni 15 secondi mentre la scheda è attiva. Nessuna interrogazione Amazon viene fatta dal controllo scadenza.
-- I collegamenti delle schede prodotto e il collegamento HAUL restano disponibili. La privacy del sito va aggiornata in base alla configurazione effettivamente pubblicata.
-
-Distribuire tutti i file dello ZIP, comprese la cartella browser_identity e i moduli shared_results.py e visitor_limit.py. Conservare i Secrets reali; aggiungere searches_per_hour = 10 nella sezione amazon_api. Non cancellare .runtime sul server. Nessun test reale sul server Streamlit del cliente è stato eseguito.
-
-
-## Pertinenza e prezzi (aggiornamento corrente)
-
-- Aggiunto search_relevance.py: verifica conservativa dei termini nel titolo per risultati API e web, con sinonimi per notebook, smartphone e cuffie. Una ricerca notebook non deve essere soddisfatta da adesivi o custodie per notebook. Le ricerche editoriali che iniziano con offerte restano ampie per la Vetrina.
-- Il controllo è lessicale, non un classificatore universale: può escludere prodotti pertinenti con titoli incompleti. Non verifica autonomamente specifiche tecniche, categoria o autenticità del marchio. Vengono mostrati meno risultati se manca pertinenza, senza riempire con accessori.
-- Prezzo barrato HTML solo dal widget che contiene il prezzo corrente. Più riferimenti diversi nello stesso widget: nessun prezzo barrato/sconto. Percentuale API calcolata dai prezzi della stessa offerta; offerte solo in abbonamento escluse dalla selezione ordinaria.
-- Il prezzo di riferimento Amazon non viene presentato come prova di un prezzo storico realmente praticato. Rimangono possibili variazioni di variante, disponibilità, spedizione e condizioni Amazon.
-- Test locali su casi sintetici; nessuna verifica reale del prezzo sul sito Amazon eseguita.
-- Testo HAUL abbreviato mantenendo le condizioni fornite; rimosso il pulsante Apri Amazon HAUL e l'avvertenza ripetuta dalle schede.
-
-
-## Verifica Prime e vantaggi HAUL
-
-- Tre riquadri HAUL: verde per spedizione, blu per 5%, arancione per 10%; impaginazione flessibile su schermi piccoli. Condizioni promozionali mantenute come fornite.
-- Il filtro Prime controlla ora il badge nel blocco consegna della pagina dettaglio, anche per i risultati API. Riferimenti generici a Prime nel titolo, nella navigazione o in un invito all'abbonamento non bastano. Senza conferma il risultato viene escluso.
-- prime_status.py usa HTMLParser; i blocchi riconosciuti sono espliciti. Cambiamenti del markup Amazon o blocchi di rete possono causare esclusioni di prodotti effettivamente Prime. Badge non equivale a garanzia universale di spedizione gratuita: dipende da abbonamento e condizioni applicabili al cliente.
-- La verifica aggiunge richieste web, non Creators API; esito dettaglio in cache 2 minuti e ricerca completa 10 minuti. Paginazione invariata in attesa di scelta dell'utente.
-- Test sintetici, non una certificazione del comportamento attuale di Amazon o dell'interfaccia pubblicata.
-
-
-## Recupero progressivo dei risultati
-
-Il fallback conta ora i prodotti che superano verifica e filtri, non soltanto i candidati scoperti. Se una pagina contiene 10 candidati e solo 4 validi, continua sulle pagine/varianti successive, senza verificare nuovamente gli ASIN scartati. Limiti per singolo recupero: 5 pagine, 50 candidati pertinenti verificabili e soglia temporale di 90 secondi controllata tra i batch (le richieste già partite possono terminare oltre tale soglia). Restano timeout, cache e budget API. I prezzi SERP non escludono più in anticipo prodotti che potrebbero rispettare i limiti dopo verifica dettaglio.
-
-Una ricerca di solo marchio, come ASICS, resta aperta a tutte le tipologie che riportano il marchio nel titolo. I risultati sono prodotti recuperati, non la dimensione del catalogo Amazon. I blocchi delle fonti possono ancora impedire di arrivare a 10; non vengono aggiunti prodotti inventati o non pertinenti. Un caricamento senza nuovi risultati non disabilita definitivamente il pulsante (restano limite orario e cache).
-
-
-## Diagnostica delle fonti e discovery
-
-- Gli errori di SearchItems riportano nei log operation, http e cause, incluso lo stato OAuth e il circuit breaker AssociateNotEligible. Stato per thread per non confondere richieste simultanee. Non vengono registrati payload OAuth, token o HTML integrale.
-- I log esterni distinguono responses_received da extracted_products; ogni provider registra candidati e prodotti estratti. HTTP 202 resta una risposta pending, non viene automaticamente interpretato come risultati validi. Pagine con indicatori di verifica/consenso vengono scartate.
-- Query esterna ampliata da site:amazon.it/dp/ a site:amazon.it; l'accettazione finale richiede comunque URL prodotto Amazon e ASIN valido. Supportati anche redirect relativi DuckDuckGo e URL senza schema. RSS brevi non vengono eliminati solo perché sotto 500 caratteri.
-- Un risultato vuoto atteso non genera più il fuorviante ValueError nei log della cache. Restano pausa condivisa e limiti alle richieste.
-- Queste correzioni non attestano la causa del guasto API nell'account reale e non superano eventuali blocchi Amazon. Dopo il deploy cercare nei log operation=oauth/searchItems, http e cause per individuare autenticazione, idoneità o quota. I dettagli restano solo nei log del gestore.
-- Verifica locale: 6 test diagnostica/parser e 3 test recupero progressivo superati con dati simulati. Nessuna verifica live dell'account Amazon o del deployment Streamlit.
+Sintassi e test locali su cache, concorrenza, quote, recupero progressivo, pertinenza, prezzi, Prime e diagnostica. HTTP e Streamlit sono simulati nei test: non equivalgono a una verifica end-to-end dell'interfaccia o dell'account Amazon. Prestazioni reali, persistenza del disco e localStorage devono essere verificati sul deployment effettivo. Non viene garantita accessibilità di Amazon dal server hosting.

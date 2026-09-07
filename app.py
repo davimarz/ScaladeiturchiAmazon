@@ -788,7 +788,7 @@ def _on_search_sort_change() -> None:
 
 
 SEARCH_LIMIT_NOTICE = (
-    "Hai raggiunto il limite di 10 ricerche nell’ultima ora. "
+    "Hai raggiunto il limite di ricerche nell’ultima ora. "
     "Puoi continuare direttamente su Amazon."
 )
 
@@ -887,7 +887,7 @@ def _perform_search(target_count: int) -> None:
         LOGGER.info("Ricerca senza risultati: %s", amazon_api.get_search_diagnostics())
         st.session_state["search_notice"] = (
             "Non abbiamo trovato prodotti per questa ricerca. "
-            "Prova un altro termine oppure continua su Amazon."
+            "Prova un altro termine di ricerca."
         )
     elif len(results) < target_count:
         st.session_state["search_notice"] = (
@@ -1434,8 +1434,8 @@ if active_tab == "haul":
                 if str(product.get("asin") or "").strip()
             ]
 
-        # Se Amazon blocca temporaneamente il fetch, conserva la selezione
-        # valida precedente anziché mostrare una pagina vuota.
+        # Eventuali schede precedenti vengono gestite dalla cache condivisa,
+        # che rimuove i prezzi scaduti e limita il periodo di conservazione.
         st.session_state["haul_loaded_token"] = current_token
 
     haul_products = st.session_state.get("offerte_haul", [])
@@ -1528,6 +1528,8 @@ elif active_tab == "cerca":
     ):
         st.session_state["search_keyword_input"] = str(previous.get("keyword") or "")
 
+    if not st.session_state.get("visitor_id"):
+        st.info("Preparazione della ricerca. Se l’attesa continua, abilita l’archiviazione del sito nel browser e ricarica la pagina.")
     search_col, button_col = st.columns([5, 1])
 
     with search_col:
@@ -1542,7 +1544,7 @@ elif active_tab == "cerca":
         submitted = st.button(
             "🔍 Cerca",
             key="search_submit_button",
-            disabled=_session_limit_reached(),
+            disabled=_session_limit_reached() or not st.session_state.get("visitor_id"),
             type="primary",
             use_container_width=True,
         )
@@ -1702,7 +1704,7 @@ elif active_tab == "cerca":
         and not st.session_state.get("search_notice")
     ):
         st.warning(
-            "Amazon non ha restituito prodotti leggibili in questo momento. ""Riprova la ricerca: il catalogo può rispondere in modo temporaneamente variabile."
+            "Nessun prodotto recuperato in questo momento. Riprova tra poco."
         )
 
 elif active_tab == "privacy":
@@ -1721,16 +1723,6 @@ elif active_tab == "privacy":
         un identificatore casuale. Il server lo associa agli orari delle
         ricerche recenti; questo identificatore non richiede nome o email.
 
-        Per applicare il limite orario delle ricerche, il browser conserva
-        un identificatore casuale. Il server lo associa agli orari delle
-        ricerche recenti; questo identificatore non richiede nome o email.
-
-        Per applicare il limite orario delle ricerche, il browser conserva
-        un identificatore casuale. Il server lo associa agli orari delle
-        ricerche recenti; questo identificatore non richiede nome o email.
-
-        Le credenziali tecniche del sito sono conservate nei Secrets di
-        Streamlit e non devono essere pubblicate nel repository GitHub.
         """
     )
 

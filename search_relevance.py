@@ -7,7 +7,7 @@ ALIASES = {
  'smartphone': {'smartphone','cellulare','cellulari','telefonino'},
  'cuffie': {'cuffie','auricolari','headphones','earbuds'},
 }
-STOP = {'per','con','da','di','il','lo','la','le','gli','un','una','e','a','al','del','della','the'}
+STOP = {'per','con','da','di','il','lo','la','le','gli','un','una','e','a','al','del','della','the','offerte','offerta','amazon','giorno','tecnologia'}
 ACCESSORIES = {'adesivi','adesivo','custodia','custodie','cover','borsa','borse','pellicola','pellicole','supporto','supporti','caricatore','alimentatore','batteria','ricambio','ricambi','sleeve','sticker','stickers'}
 
 
@@ -19,8 +19,6 @@ def tokens(text):
 def matches(query, title):
  q=tokens(query); t=tokens(title); ts=set(t)
  if not q:return True
- # Editorial showcase discovery is intentionally broad.
- if q[0] == "offerte":return True
  groups=[]
  for word in q:
   if word in STOP:continue
@@ -34,4 +32,4 @@ def matches(query, title):
   accessory_positions=[i for i,w in enumerate(t) if w in ACCESSORIES]
   if accessory_positions and device_positions and min(accessory_positions)<min(device_positions):return False
   if re.search(r'\b(?:per|for|compatibile con)\s+(?:pc\s+)?(?:notebook|laptop|portatil[ei])\b',' '.join(t)):return False
- return bool(groups)
+ return True

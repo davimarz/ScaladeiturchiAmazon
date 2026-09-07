@@ -85,6 +85,7 @@ RE_MONTHLY_BOUGHT = re.compile(
 
 
 _HTML_CACHE: dict[str, tuple[float, str]] = {}
+_PRIME_EVIDENCE: dict[str, tuple[float, bool]] = {}
 _DETAIL_SNAPSHOT_CACHE: dict[
     str,
     tuple[
@@ -438,9 +439,13 @@ def get_creators_access_token(force_refresh: bool = False) -> Optional[str]:
                     LOGGER.error("Creators oauth cause=access_token_missing")
                     return None
 
-                expires_in = max(300, int(data.get("expires_in", 3600)))
+                try:
+                    expires_in = max(1, int(data.get("expires_in", 3600)))
+                except (TypeError, ValueError):
+                    _set_api_status("oauth", 200, "invalid_expiry")
+                    return None
                 _TOKEN_CACHE["access_token"] = str(token)
-                _TOKEN_CACHE["expires_at"] = now + expires_in
+                _TOKEN_CACHE["expires_at"] = time.time() + expires_in
                 return str(token)
 
             if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
@@ -1311,6 +1316,12 @@ def _get_detail_snapshot_cached(
     snapshot = desktop_snapshot
 
     asin = _asin_from_detail_url(detail_url)
+    if asin and desktop_html:
+        with _CACHE_LOCK:
+            _PRIME_EVIDENCE[asin] = (time.time(), prime_status.confirmed(desktop_html, asin))
+            if len(_PRIME_EVIDENCE) > 256:
+                oldest = min(_PRIME_EVIDENCE, key=lambda key: _PRIME_EVIDENCE[key][0])
+                _PRIME_EVIDENCE.pop(oldest, None)
 
     if asin and not _detail_snapshot_is_complete(snapshot):
         mobile_url = f"https://www.amazon.it/gp/aw/d/{asin}?psc=1"
@@ -1353,6 +1364,10 @@ def _get_detail_snapshot_cached(
 
 @st.cache_data(ttl=120, show_spinner=False, max_entries=256)
 def _prime_detail_cached(asin: str) -> bool:
+    with _CACHE_LOCK:
+        evidence = _PRIME_EVIDENCE.get(asin)
+        if evidence and time.time() - evidence[0] < 120:
+            return evidence[1]
     html_text = _fetch_amazon_html(
         f"https://www.amazon.it/dp/{asin}?th=1&psc=1", timeout=DETAIL_HTML_TIMEOUT
     )

@@ -17,8 +17,13 @@ _changed = threading.Condition(_lock)
 
 def get(key, ttl, loader, retry=30, stale_for=900):
     with _changed:
+        wait_until = time.monotonic() + 20
         while key in _running:
-            _changed.wait(timeout=1)
+            remaining = wait_until - time.monotonic()
+            if remaining <= 0:
+                entry = _entries.get(key)
+                return _stale(entry, time.time(), stale_for) if entry else []
+            _changed.wait(timeout=min(1, remaining))
         now = time.time()
         entry = _entries.get(key)
         if entry and now < entry['expires']:
@@ -30,7 +35,12 @@ def get(key, ttl, loader, retry=30, stale_for=900):
         data = loader()
         if not data:
             raise EmptyResult()
-    except Exception as exc:
+    except BaseException as exc:
+        if not isinstance(exc, Exception):
+            with _changed:
+                _running.discard(key)
+                _changed.notify_all()
+            raise
         logger = logging.getLogger("amazon_affiliate")
         if isinstance(exc, EmptyResult):
             logger.info("Cache: nessun prodotto utilizzabile; nuovo tentativo consentito tra %ss", retry)
