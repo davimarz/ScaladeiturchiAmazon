@@ -246,14 +246,15 @@ def _get_http_session() -> requests.Session:
 
 
 def _set_api_status(operation: str, status_code: Optional[int], message: str = "") -> None:
-    _LAST_API_STATUS["operation"] = str(operation or "")
-    _LAST_API_STATUS["status_code"] = status_code
-    _LAST_API_STATUS["message"] = str(message or "")[:240]
+    _HTTP_LOCAL.api_status = {
+        "operation": str(operation or ""), "status_code": status_code,
+        "message": str(message or "")[:240],
+    }
 
 
 def get_last_api_status() -> dict[str, Any]:
     """Stato tecnico dell'ultima chiamata, senza token o credenziali."""
-    return dict(_LAST_API_STATUS)
+    return dict(getattr(_HTTP_LOCAL, "api_status", _LAST_API_STATUS))
 
 
 def is_associate_not_eligible(status: Optional[dict[str, Any]] = None) -> bool:
@@ -396,7 +397,8 @@ def get_creators_access_token(force_refresh: bool = False) -> Optional[str]:
 
         client_id, client_secret, token_url = _creators_credentials()
         if not client_id or not client_secret:
-            LOGGER.error("Credenziali Creators API mancanti nei Secrets.")
+            _set_api_status("oauth", None, "credentials_missing")
+            LOGGER.error("Creators oauth cause=credentials_missing")
             return None
 
         payload = {
@@ -418,19 +420,22 @@ def get_creators_access_token(force_refresh: bool = False) -> Optional[str]:
                 if attempt < 2:
                     time.sleep(0.5 * (2**attempt))
                     continue
-                LOGGER.error("Errore rete token Creators API: %s", type(exc).__name__)
+                _set_api_status("oauth", None, type(exc).__name__)
+                LOGGER.error("Creators oauth network_error=%s", type(exc).__name__)
                 return None
 
             if response.status_code == 200:
                 try:
                     data = response.json()
                 except ValueError:
-                    LOGGER.error("Risposta token Creators API non JSON.")
+                    _set_api_status("oauth", 200, "invalid_json")
+                    LOGGER.error("Creators oauth cause=invalid_json")
                     return None
 
                 token = data.get("access_token")
                 if not token:
-                    LOGGER.error("access_token assente nella risposta Amazon.")
+                    _set_api_status("oauth", 200, "access_token_missing")
+                    LOGGER.error("Creators oauth cause=access_token_missing")
                     return None
 
                 expires_in = max(300, int(data.get("expires_in", 3600)))
@@ -442,7 +447,8 @@ def get_creators_access_token(force_refresh: bool = False) -> Optional[str]:
                 time.sleep(_retry_delay(response, attempt))
                 continue
 
-            LOGGER.error("Token Creators API: HTTP %s", response.status_code)
+            _set_api_status("oauth", response.status_code, "token_request_failed")
+            LOGGER.error("Creators oauth http=%s cause=token_request_failed", response.status_code)
             return None
 
     return None
@@ -452,6 +458,7 @@ def _api_post(operation: str, payload: dict[str, Any]) -> Optional[dict[str, Any
     # Dopo AssociateNotEligible evitiamo di ripetere una richiesta che Amazon
     # rifiuterebbe comunque. Ogni 60 minuti il backend riprova automaticamente.
     if _creators_temporarily_blocked():
+        _set_api_status(operation, 403, "AssociateNotEligible_cooldown")
         return None
 
     endpoint = f"{CREATORS_API_BASE}/{operation}"
@@ -481,6 +488,7 @@ def _api_post(operation: str, payload: dict[str, Any]) -> Optional[dict[str, Any
             if attempt < 2:
                 time.sleep(0.5 * (2**attempt))
                 continue
+            _set_api_status(operation, None, type(exc).__name__)
             LOGGER.error(
                 "Creators API %s: errore rete %s", operation, type(exc).__name__
             )
@@ -2260,6 +2268,10 @@ def _external_amazon_url(href: str) -> str:
     if not raw:
         return ""
 
+    if raw.startswith("//"):
+        raw = "https:" + raw
+    if raw.startswith("/l/?"):
+        raw = "https://duckduckgo.com" + raw
     # Link relativi Google (/url?q=...).
     if raw.startswith("/url?"):
         raw = "https://www.google.com" + raw
@@ -2303,6 +2315,20 @@ def _external_amazon_url(href: str) -> str:
     return ""
 
 
+def _external_response_kind(status: int, text: str) -> str:
+    lower = (text or "").lower()
+    if any(marker in lower for marker in (
+        "anomaly.js", "challenge-form", "g-recaptcha", "unusual traffic",
+        "consent.google.com", "verify you are human",
+    )):
+        return "challenge_or_consent"
+    if status != 200:
+        return "pending" if status == 202 else "http_error"
+    if not text or len(text.strip()) < 20:
+        return "empty"
+    return "received"
+
+
 def _fetch_external_search_html(url: str) -> Optional[str]:
     try:
         session = _get_http_session()
@@ -2315,7 +2341,11 @@ def _fetch_external_search_html(url: str) -> Optional[str]:
             timeout=EXTERNAL_DISCOVERY_TIMEOUT,
             allow_redirects=True,
         )
-        if response.status_code == 200 and len(response.text or "") >= 500:
+        kind = _external_response_kind(response.status_code, response.text)
+        LOGGER.info("External response host=%s http=%s bytes=%s classification=%s",
+                    urlparse(url).hostname or "", response.status_code,
+                    len(response.text or ""), kind)
+        if kind == "received":
             return response.text
         LOGGER.info(
             "External discovery http status=%s len=%s host=%s",
@@ -2334,7 +2364,7 @@ def _fetch_external_search_html(url: str) -> Optional[str]:
 
 def _external_discovery_urls(keyword: str) -> dict[str, str]:
     clean = " ".join(str(keyword or "").strip().split())
-    query = f'site:amazon.it/dp/ {clean}'
+    query = f'site:amazon.it {clean}'
     return {
         "bing_rss": "https://www.bing.com/search?" + urlencode({
             "q": query,
@@ -2371,6 +2401,7 @@ def _parse_external_engine_products(
                 title = " ".join((item.findtext("title") or "").split())
                 candidates.append((link, title))
         except ET.ParseError:
+            LOGGER.info("External parser source=%s reason=invalid_xml", source)
             return []
     else:
         soup = BeautifulSoup(html_text, "html.parser")
@@ -2383,6 +2414,7 @@ def _parse_external_engine_products(
             title = " ".join(link.get_text(" ", strip=True).split())
             candidates.append((href, title))
 
+    LOGGER.info("External parser source=%s candidates=%s", source, len(candidates))
     for href, title in candidates:
         amazon_url = _external_amazon_url(href)
         if not amazon_url:
@@ -2458,6 +2490,7 @@ def _discover_amazon_products_external(
 
     seen = set(exclude_asins)
     found: list[dict[str, Any]] = []
+    parsed_sources = 0
     # Bing RSS è il formato più semplice; Google/DDG completano se necessario.
     for source in ("bing_rss", "google", "duckduckgo"):
         text = responses.get(source)
@@ -2470,16 +2503,19 @@ def _discover_amazon_products_external(
             source, text, partner_tag, seen, remaining
         )
         found.extend(products)
+        if products:
+            parsed_sources += 1
+        LOGGER.info("External parser source=%s extracted_products=%s", source, len(products))
 
     LOGGER.info(
-        "External discovery multi keyword=%r sources_ok=%s products=%s target=%s",
+        "External discovery multi keyword=%r responses_received=%s products=%s target=%s",
         clean,
         len(responses),
         len(found),
         target,
     )
     _set_search_diagnostics(
-        external_sources_ok=len(responses),
+        external_sources_ok=parsed_sources,
         external_products=len(found),
     )
     return found
@@ -2931,7 +2967,11 @@ def _search_page_cached(
 
     data = _api_post("searchItems", payload)
     if data is None:
-        raise api_budget.BudgetUnavailable("Ricerca Amazon temporaneamente non disponibile")
+        status = get_last_api_status()
+        raise api_budget.BudgetUnavailable(
+            f"operation={status.get('operation')} http={status.get('status_code')} "
+            f"cause={status.get('message')}"
+        )
     items = ((data.get("searchResult") or {}).get("items") or [])
 
     clean_items: list[dict[str, Any]] = []

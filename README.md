@@ -381,3 +381,13 @@ Distribuire tutti i file dello ZIP, comprese la cartella browser_identity e i mo
 Il fallback conta ora i prodotti che superano verifica e filtri, non soltanto i candidati scoperti. Se una pagina contiene 10 candidati e solo 4 validi, continua sulle pagine/varianti successive, senza verificare nuovamente gli ASIN scartati. Limiti per singolo recupero: 5 pagine, 50 candidati pertinenti verificabili e soglia temporale di 90 secondi controllata tra i batch (le richieste già partite possono terminare oltre tale soglia). Restano timeout, cache e budget API. I prezzi SERP non escludono più in anticipo prodotti che potrebbero rispettare i limiti dopo verifica dettaglio.
 
 Una ricerca di solo marchio, come ASICS, resta aperta a tutte le tipologie che riportano il marchio nel titolo. I risultati sono prodotti recuperati, non la dimensione del catalogo Amazon. I blocchi delle fonti possono ancora impedire di arrivare a 10; non vengono aggiunti prodotti inventati o non pertinenti. Un caricamento senza nuovi risultati non disabilita definitivamente il pulsante (restano limite orario e cache).
+
+
+## Diagnostica delle fonti e discovery
+
+- Gli errori di SearchItems riportano nei log operation, http e cause, incluso lo stato OAuth e il circuit breaker AssociateNotEligible. Stato per thread per non confondere richieste simultanee. Non vengono registrati payload OAuth, token o HTML integrale.
+- I log esterni distinguono responses_received da extracted_products; ogni provider registra candidati e prodotti estratti. HTTP 202 resta una risposta pending, non viene automaticamente interpretato come risultati validi. Pagine con indicatori di verifica/consenso vengono scartate.
+- Query esterna ampliata da site:amazon.it/dp/ a site:amazon.it; l'accettazione finale richiede comunque URL prodotto Amazon e ASIN valido. Supportati anche redirect relativi DuckDuckGo e URL senza schema. RSS brevi non vengono eliminati solo perché sotto 500 caratteri.
+- Un risultato vuoto atteso non genera più il fuorviante ValueError nei log della cache. Restano pausa condivisa e limiti alle richieste.
+- Queste correzioni non attestano la causa del guasto API nell'account reale e non superano eventuali blocchi Amazon. Dopo il deploy cercare nei log operation=oauth/searchItems, http e cause per individuare autenticazione, idoneità o quota. I dettagli restano solo nei log del gestore.
+- Verifica locale: 6 test diagnostica/parser e 3 test recupero progressivo superati con dati simulati. Nessuna verifica live dell'account Amazon o del deployment Streamlit.

@@ -5,6 +5,10 @@ import threading
 import time
 from collections import OrderedDict
 
+class EmptyResult(Exception):
+    pass
+
+
 _lock = threading.RLock()
 _entries = OrderedDict()
 _running = set()
@@ -25,9 +29,13 @@ def get(key, ttl, loader, retry=30, stale_for=900):
     try:
         data = loader()
         if not data:
-            raise ValueError('Empty result')
+            raise EmptyResult()
     except Exception as exc:
-        logging.getLogger("amazon_affiliate").warning("Recupero condiviso fallito: %s", type(exc).__name__)
+        logger = logging.getLogger("amazon_affiliate")
+        if isinstance(exc, EmptyResult):
+            logger.info("Cache: nessun prodotto utilizzabile; nuovo tentativo consentito tra %ss", retry)
+        else:
+            logger.warning("Cache: recupero fallito error_type=%s retry_seconds=%s", type(exc).__name__, retry)
         with _changed:
             entry = _entries.setdefault(key, {'data': [], 'expires': 0})
             entry['retry_at'] = time.time() + retry
