@@ -28,6 +28,7 @@ import api_budget
 import shared_results
 import inspect
 import search_relevance
+import prime_status
 import streamlit as st
 from bs4 import BeautifulSoup
 
@@ -1342,6 +1343,30 @@ def _get_detail_snapshot_cached(
     return snapshot
 
 
+@st.cache_data(ttl=120, show_spinner=False, max_entries=256)
+def _prime_detail_cached(asin: str) -> bool:
+    html_text = _fetch_amazon_html(
+        f"https://www.amazon.it/dp/{asin}?th=1&psc=1", timeout=DETAIL_HTML_TIMEOUT
+    )
+    if not html_text:
+        # Fallimenti di rete non vengono memorizzati come prodotti non Prime.
+        raise api_budget.BudgetUnavailable("Dettaglio Prime non verificabile")
+    return prime_status.confirmed(html_text, asin)
+
+
+def _confirmed_prime(product: dict[str, Any]) -> bool:
+    asin = str(product.get("asin") or "").upper()
+    if not re.fullmatch(r"[A-Z0-9]{10}", asin):
+        return False
+    try:
+        result = _prime_detail_cached(asin)
+    except api_budget.BudgetUnavailable:
+        result = False
+    product["is_prime"] = result
+    product["prime_detail_verified"] = result
+    return result
+
+
 def _verify_product_detail_price(
     product: dict[str, Any],
 ) -> dict[str, Any]:
@@ -2098,8 +2123,7 @@ def _build_search_product_from_node(
     price = float(price or 0.0)
 
     is_prime = _extract_html_prime(node)
-    if require_prime and not is_prime:
-        return None
+    # Il badge SERP è solo un indizio: il filtro finale verifica il dettaglio.
 
     if min_price is not None:
         if price <= 0 or price < float(min_price):
@@ -2825,7 +2849,7 @@ def _search_html_fallback(
         collected = [
             product for product in collected
             if search_relevance.matches(clean_keyword, product.get("titolo"))
-            and (not require_prime or product.get("is_prime") is True)
+            and (not require_prime or _confirmed_prime(product))
             and _passes_local_filters(product, min_price, max_price)
         ]
 
@@ -3118,6 +3142,8 @@ def _offerte_uncached(
                         product = _verify_product_detail_price(product)
 
             if not product or not search_relevance.matches(query, product.get("titolo")):
+                continue
+            if solo_spedizione_gratuita and not _confirmed_prime(product):
                 continue
 
             if not _passes_local_filters(

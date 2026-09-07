@@ -358,7 +358,7 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="column
 div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="stColumn"] {
     flex: 1 1 0 !important;
     width: auto !important;
-    min-width: 54px !important;
+    min-width: 82px !important;
     max-width: none !important;
     padding: 0 !important;
     margin: 0 !important;
@@ -366,7 +366,7 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="stColu
 
 div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
     width: 100% !important;
-    min-width: 54px !important;
+    min-width: 82px !important;
     height: 34px !important;
     min-height: 34px !important;
     padding: 4px 7px !important;
@@ -385,12 +385,12 @@ div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
     div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) > div,
     div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="column"],
     div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) div[data-testid="stColumn"] {
-        min-width: 48px !important;
+        min-width: 76px !important;
         flex: 1 1 0 !important;
     }
 
     div[data-testid="stHorizontalBlock"]:has(.st-key-page_1) button {
-        min-width: 48px !important;
+        min-width: 76px !important;
         font-size: .70rem !important;
         padding: 3px 5px !important;
     }
@@ -1384,9 +1384,22 @@ if active_tab == "haul":
         <div style='background:linear-gradient(135deg,#fff7ed,#fffbeb);
         border:1px solid #fdba74;border-radius:10px;padding:9px 10px;
         margin:0 0 8px 0;color:#7c2d12;font-size:.72rem;line-height:1.45;'>
-        <strong>Amazon Haul:</strong> spedizione gratis con 3 articoli;
-        <strong>−5%</strong> con 4; <strong>−10%</strong> con 5 o più.
-        <br><small>Si applicano le condizioni Amazon Haul.</small>
+        <div style="font-size:.95rem;font-weight:900;color:#7c2d12;margin-bottom:8px;">I vantaggi Amazon Haul</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <div style="flex:1;min-width:140px;background:#ecfdf5;border:2px solid #059669;border-radius:10px;padding:10px;color:#065f46;">
+            <div style="font-size:1.15rem;font-weight:900;">Spedizione gratis</div>
+            <div style="font-size:.85rem;">con <strong>3 articoli</strong></div>
+          </div>
+          <div style="flex:1;min-width:110px;background:#eff6ff;border:2px solid #2563eb;border-radius:10px;padding:10px;color:#1e40af;">
+            <div style="font-size:1.5rem;font-weight:900;">−5%</div>
+            <div style="font-size:.85rem;">con <strong>4 articoli</strong></div>
+          </div>
+          <div style="flex:1;min-width:110px;background:#fff7ed;border:2px solid #ea580c;border-radius:10px;padding:10px;color:#9a3412;">
+            <div style="font-size:1.5rem;font-weight:900;">−10%</div>
+            <div style="font-size:.85rem;">con <strong>5 o più articoli</strong></div>
+          </div>
+        </div>
+        <div style="margin-top:7px;font-size:.7rem;">Si applicano le condizioni Amazon Haul.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1588,7 +1601,7 @@ elif active_tab == "cerca":
             for page_number, col in enumerate(page_cols, start=1):
                 with col:
                     if st.button(
-                        f"P.{page_number}",
+                        f"Pagina {page_number}",
                         type=(
                             "primary"
                             if page_number == current_page
@@ -1701,6 +1714,10 @@ elif active_tab == "privacy":
         un identificatore casuale. Il server lo associa agli orari delle
         ricerche recenti; questo identificatore non richiede nome o email.
 
+        Per applicare il limite orario delle ricerche, il browser conserva
+        un identificatore casuale. Il server lo associa agli orari delle
+        ricerche recenti; questo identificatore non richiede nome o email.
+
         Le credenziali tecniche del sito sono conservate nei Secrets di
         Streamlit e non devono essere pubblicate nel repository GitHub.
         """
@@ -1770,3 +1787,4 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+

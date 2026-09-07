@@ -365,3 +365,12 @@ Distribuire tutti i file dello ZIP, comprese la cartella browser_identity e i mo
 - Il prezzo di riferimento Amazon non viene presentato come prova di un prezzo storico realmente praticato. Rimangono possibili variazioni di variante, disponibilità, spedizione e condizioni Amazon.
 - Test locali su casi sintetici; nessuna verifica reale del prezzo sul sito Amazon eseguita.
 - Testo HAUL abbreviato mantenendo le condizioni fornite; rimosso il pulsante Apri Amazon HAUL e l'avvertenza ripetuta dalle schede.
+
+
+## Verifica Prime e vantaggi HAUL
+
+- Tre riquadri HAUL: verde per spedizione, blu per 5%, arancione per 10%; impaginazione flessibile su schermi piccoli. Condizioni promozionali mantenute come fornite.
+- Il filtro Prime controlla ora il badge nel blocco consegna della pagina dettaglio, anche per i risultati API. Riferimenti generici a Prime nel titolo, nella navigazione o in un invito all'abbonamento non bastano. Senza conferma il risultato viene escluso.
+- prime_status.py usa HTMLParser; i blocchi riconosciuti sono espliciti. Cambiamenti del markup Amazon o blocchi di rete possono causare esclusioni di prodotti effettivamente Prime. Badge non equivale a garanzia universale di spedizione gratuita: dipende da abbonamento e condizioni applicabili al cliente.
+- La verifica aggiunge richieste web, non Creators API; esito dettaglio in cache 2 minuti e ricerca completa 10 minuti. Paginazione invariata in attesa di scelta dell'utente.
+- Test sintetici, non una certificazione del comportamento attuale di Amazon o dell'interfaccia pubblicata.
