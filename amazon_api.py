@@ -2632,10 +2632,41 @@ def _search_html_fallback(
     # Per 10 nuovi prodotti bastano normalmente 1-2 pagine.
     # Consentiamo fino a 3 pagine per recuperare markup incompleto,
     # duplicati e prodotti esclusi, senza martellare Amazon.
-    max_pages = min(
-        5,
-        max(3, math.ceil(target / 10) + 1),
-    )
+    max_pages = 5
+    deadline = time.monotonic() + 90
+    checked_candidates = 0
+    candidate_limit = 50
+
+    def validate_candidates(candidates):
+        nonlocal checked_candidates
+        pending = []
+        for product in candidates:
+            asin = str(product.get("asin") or "").strip().upper()
+            if len(asin) != 10 or asin in seen:
+                continue
+            seen.add(asin)
+            if not search_relevance.matches(clean_keyword, product.get("titolo")):
+                continue
+            if checked_candidates >= candidate_limit:
+                break
+            checked_candidates += 1
+            pending.append(product)
+        valid = []
+        for offset in range(0, len(pending), 10):
+            if time.monotonic() >= deadline:
+                break
+            batch = _verify_products_detail_prices(pending[offset:offset+10])
+            for product in batch:
+                if not search_relevance.matches(clean_keyword, product.get("titolo")):
+                    continue
+                if not _passes_local_filters(product, min_price, max_price):
+                    continue
+                if require_prime and not _confirmed_prime(product):
+                    continue
+                valid.append(product)
+                if len(discovered) + len(valid) >= target:
+                    return valid
+        return valid
 
     def merge_html_page(
         html_text: str,
@@ -2659,41 +2690,17 @@ def _search_html_fallback(
         parsed = _extract_products_from_html(
             html_text,
             partner_tag=partner_tag,
-            min_price=min_price,
-            max_price=max_price,
+            min_price=None,
+            max_price=None,
             require_prime=require_prime,
         )
         diagnostic_products_parsed += len(parsed)
 
-        added = 0
-
         for page_index, product in enumerate(parsed):
-            if not search_relevance.matches(clean_keyword, product.get("titolo")):
-                continue
-            asin = str(product.get("asin") or "").strip().upper()
-
-            if (
-                len(asin) != 10
-                or asin in seen
-                or asin in page_seen
-            ):
-                continue
-
-            page_seen.add(asin)
-            seen.add(asin)
-
-            product.setdefault(
-                "_amazon_position",
-                (page_number - 1) * 100 + page_index,
-            )
-
-            discovered.append(product)
-            added += 1
-
-            if len(discovered) >= target:
-                break
-
-        return added
+            product.setdefault("_amazon_position", (page_number - 1) * 100 + page_index)
+        valid = validate_candidates(parsed)
+        discovered.extend(valid)
+        return len(valid)
 
     if html_search_circuit_open():
         LOGGER.info(
@@ -2706,7 +2713,7 @@ def _search_html_fallback(
         pages_to_scan = range(1, max_pages + 1)
 
     for page in pages_to_scan:
-        if len(discovered) >= target:
+        if len(discovered) >= target or checked_candidates >= candidate_limit or time.monotonic() >= deadline:
             break
 
         diagnostic_pages_attempted += 1
@@ -2808,7 +2815,7 @@ def _search_html_fallback(
     # abbastanza ASIN, usa un indice web solo per trovare URL Amazon reali.
     # Poi la pagina prodotto Amazon resta la fonte di titolo/immagine/prezzo.
     # -----------------------------------------------------------------
-    if len(discovered) < target:
+    if len(discovered) < target and checked_candidates < candidate_limit and time.monotonic() < deadline:
         missing = target - len(discovered)
 
         external_products = _discover_amazon_products_external(
@@ -2818,40 +2825,12 @@ def _search_html_fallback(
             exclude_asins=seen,
         )
 
-        for product in external_products:
-            if not search_relevance.matches(clean_keyword, product.get("titolo")):
-                continue
-            asin = str(product.get("asin") or "").strip().upper()
-            if len(asin) != 10 or asin in seen:
-                continue
+        for index, product in enumerate(external_products):
+            product.setdefault("_amazon_position", 10_000 + index)
+        discovered.extend(validate_candidates(external_products))
 
-            seen.add(asin)
-            product.setdefault(
-                "_amazon_position",
-                10_000 + len(discovered),
-            )
-            discovered.append(product)
-
-            if len(discovered) >= target:
-                break
-
-    # -----------------------------------------------------------------
-    # SECONDA FASE: la verifica prezzo non blocca più la discovery.
-    # A questo punto abbiamo raccolto fino a 10 ASIN reali.
-    # -----------------------------------------------------------------
+    # Il target conta prodotti già verificati, non candidati ancora da filtrare.
     collected = list(discovered[:target])
-
-    if collected:
-        collected = _verify_products_detail_prices(collected)
-        # I prezzi definitivi possono differire dalla SERP. Anche i prodotti
-        # scoperti esternamente devono rispettare tutti i filtri richiesti.
-        # Senza conferma Prime, un risultato non soddisfa il filtro Prime.
-        collected = [
-            product for product in collected
-            if search_relevance.matches(clean_keyword, product.get("titolo"))
-            and (not require_prime or _confirmed_prime(product))
-            and _passes_local_filters(product, min_price, max_price)
-        ]
 
     if collected:
         diagnostic_reason = "ok"

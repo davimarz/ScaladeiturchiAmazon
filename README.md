@@ -374,3 +374,10 @@ Distribuire tutti i file dello ZIP, comprese la cartella browser_identity e i mo
 - prime_status.py usa HTMLParser; i blocchi riconosciuti sono espliciti. Cambiamenti del markup Amazon o blocchi di rete possono causare esclusioni di prodotti effettivamente Prime. Badge non equivale a garanzia universale di spedizione gratuita: dipende da abbonamento e condizioni applicabili al cliente.
 - La verifica aggiunge richieste web, non Creators API; esito dettaglio in cache 2 minuti e ricerca completa 10 minuti. Paginazione invariata in attesa di scelta dell'utente.
 - Test sintetici, non una certificazione del comportamento attuale di Amazon o dell'interfaccia pubblicata.
+
+
+## Recupero progressivo dei risultati
+
+Il fallback conta ora i prodotti che superano verifica e filtri, non soltanto i candidati scoperti. Se una pagina contiene 10 candidati e solo 4 validi, continua sulle pagine/varianti successive, senza verificare nuovamente gli ASIN scartati. Limiti per singolo recupero: 5 pagine, 50 candidati pertinenti verificabili e soglia temporale di 90 secondi controllata tra i batch (le richieste già partite possono terminare oltre tale soglia). Restano timeout, cache e budget API. I prezzi SERP non escludono più in anticipo prodotti che potrebbero rispettare i limiti dopo verifica dettaglio.
+
+Una ricerca di solo marchio, come ASICS, resta aperta a tutte le tipologie che riportano il marchio nel titolo. I risultati sono prodotti recuperati, non la dimensione del catalogo Amazon. I blocchi delle fonti possono ancora impedire di arrivare a 10; non vengono aggiunti prodotti inventati o non pertinenti. Un caricamento senza nuovi risultati non disabilita definitivamente il pulsante (restano limite orario e cache).

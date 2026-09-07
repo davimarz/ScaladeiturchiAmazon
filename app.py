@@ -891,8 +891,8 @@ def _perform_search(target_count: int) -> None:
         )
     elif len(results) < target_count:
         st.session_state["search_notice"] = (
-            f"Ho trovato {len(results)} prodotti per questa ricerca. "
-            "Puoi riprovare tra poco per cercarne altri."
+            f"Recuperati {len(results)} prodotti per questa ricerca. "
+            "Puoi caricarne altri con il pulsante qui sotto."
         )
     else:
         st.session_state["search_notice"] = ""
@@ -962,9 +962,9 @@ def _load_more() -> None:
         )
     else:
         st.session_state["scroll_to_current_results_page"] = False
-        st.session_state["no_more_results"] = True
+        st.session_state["no_more_results"] = False
         st.session_state["search_notice"] = (
-            "Non risultano altri prodotti disponibili per questa ricerca."
+            "Non è stato possibile recuperare altri prodotti in questo momento."
         )
 
 
