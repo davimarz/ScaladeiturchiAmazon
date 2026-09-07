@@ -778,8 +778,8 @@ def _sort_loaded_products(
     if sort_type == "Prezzo minimo":
         ordered.sort(
             key=lambda product: (
-                product.get("prezzo_finale") is None,
-                float(product.get("prezzo_finale") or float("inf")),
+                product.get("prezzo_verificato") is not True or not product.get("prezzo_finale"),
+                float(product.get("prezzo_finale") or float("inf")) if product.get("prezzo_verificato") is True else float("inf"),
                 int(product.get("_loaded_position") or 0),
             )
         )
@@ -890,6 +890,7 @@ def _watch_search_retry():
     if remaining:
         st.info(f"Non riusciamo a mostrare i risultati in questo momento. Attendi {remaining} secondi e riprova.")
     elif st.session_state.pop("search_retry_at", 0):
+        st.session_state["search_notice"] = "Puoi riprovare: premi Cerca. Oppure scopri le proposte in Vetrina."
         st.rerun()
 
 
@@ -1172,7 +1173,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     else:
         price_html = (
             "<span class='pcm-price-final' style='font-size:1.05rem;'>"
-            "Verifica prezzo su Amazon"
+            "Prezzo da verificare"
             "</span>"
         )
 
@@ -1652,9 +1653,12 @@ elif active_tab == "cerca":
         st.caption("Puoi continuare a consultare i risultati e scoprire altre idee in Vetrina.")
         st.button("Scopri la Vetrina", key="quota_vetrina", on_click=open_vetrina)
     _watch_quota_expiry()
-    if _retry_remaining():
+    if st.session_state.get("search_retry_at"):
         _watch_search_retry()
 
+
+    if st.session_state.get("amazon_unavailable") and not _session_limit_reached():
+        st.button("Scopri la Vetrina", key="unavailable_vetrina", on_click=open_vetrina)
 
     results = product_dedup.unique(st.session_state.get("offerte", []))
 
@@ -1766,9 +1770,7 @@ elif active_tab == "cerca":
         and not _retry_remaining()
         and not st.session_state.get("search_notice")
     ):
-        st.warning(
-            "Nessun prodotto recuperato in questo momento. Riprova tra poco."
-        )
+        st.info("Premi Cerca per riprovare, oppure scopri le proposte in Vetrina.")
 
 elif active_tab == "privacy":
     st.markdown(

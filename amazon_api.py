@@ -742,6 +742,7 @@ def _item_to_product(
         "sales_rank_category": sales_rank_category,
         "link_affiliato": _affiliate_detail_url(detail_url, asin, partner_tag),
         "source": "creators_api_getitems",
+        "price_verified_at": time.time(),
     }
 
 
@@ -885,6 +886,9 @@ def _extract_price_from_primary_core(
     4. fallback legacy.
     """
     high_confidence_selectors = (
+        "#corePriceDisplay_desktop_feature_div .priceToPay:not(.a-text-price)",
+        "#corePriceDisplay_mobile_feature_div .priceToPay:not(.a-text-price)",
+        "#corePrice_feature_div .apexPriceToPay:not(.a-text-price)",
         # Struttura mostrata negli screenshot dell'utente.
         "#apex_offerDisplay_desktop #corePrice_feature_div "
         "span.a-price.apexPriceToPay[data-a-color='base']",
@@ -910,6 +914,9 @@ def _extract_price_from_primary_core(
 
     for selector in high_confidence_selectors:
         for price_node in soup.select(selector):
+            context = " ".join(str(parent.get("id", "")) + " " + " ".join(parent.get("class", [])) for parent in [price_node, *list(price_node.parents)[:5]])
+            if re.search(r"installment|subscription|sns-|apex-sns|monthly", context, re.I):
+                continue
             # Prima usa whole/fraction VISIBILI, esattamente come nello screenshot.
             value = _price_from_visible_parts(price_node)
             if value > 0:
@@ -1316,7 +1323,36 @@ def _variant_metadata(html_text):
     return result
 
 
-def _get_detail_snapshot_cached(
+_DETAIL_REQUEST_LOCKS = [threading.Lock() for _ in range(64)]
+
+
+def _get_detail_snapshot_cached(detail_url):
+    asin = _asin_from_detail_url(detail_url)
+    canonical = f"https://www.amazon.it/dp/{asin}?th=1" if asin else detail_url
+    with _DETAIL_REQUEST_LOCKS[hash(canonical) % len(_DETAIL_REQUEST_LOCKS)]:
+        return _get_detail_snapshot_locked(canonical)
+
+
+def _checked_detail_html(body, asin):
+    if not body:
+        LOGGER.info("Detail price asin=%s reason=fetch_failed", asin)
+        return ""
+    soup = BeautifulSoup(body, "html.parser")
+    node = soup.select_one("input#ASIN")
+    actual = str(node.get("value") or "").upper() if node else ""
+    if not actual:
+        LOGGER.info("Detail price asin=%s reason=identity_unconfirmed", asin)
+        return ""
+    if actual != asin:
+        LOGGER.info("Detail price asin=%s reason=variant_mismatch actual=%s", asin, actual)
+        return ""
+    if not soup.select_one("#productTitle"):
+        LOGGER.info("Detail price asin=%s reason=product_content_missing", asin)
+        return ""
+    return body
+
+
+def _get_detail_snapshot_locked(
     detail_url: str,
 ) -> tuple[
     Optional[float],
@@ -1344,8 +1380,10 @@ def _get_detail_snapshot_cached(
 
     desktop_html = _fetch_amazon_html(
         detail_url,
-        timeout=DETAIL_HTML_TIMEOUT,
+        timeout=DETAIL_HTML_TIMEOUT, single_attempt=True,
     )
+    asin = _asin_from_detail_url(detail_url)
+    desktop_html = _checked_detail_html(desktop_html, asin)
     desktop_snapshot = _extract_detail_snapshot(desktop_html or "")
     snapshot = desktop_snapshot
 
@@ -1360,13 +1398,15 @@ def _get_detail_snapshot_cached(
                 oldest = min(_PRIME_EVIDENCE, key=lambda key: _PRIME_EVIDENCE[key][0])
                 _PRIME_EVIDENCE.pop(oldest, None)
 
-    if asin and not _detail_snapshot_is_complete(snapshot):
+    if asin and not snapshot[0]:
+        time.sleep(0.3)
         mobile_url = f"https://www.amazon.it/gp/aw/d/{asin}?psc=1"
 
         mobile_html = _fetch_amazon_html(
             mobile_url,
-            timeout=DETAIL_HTML_TIMEOUT,
+            timeout=DETAIL_HTML_TIMEOUT, single_attempt=True,
         )
+        mobile_html = _checked_detail_html(mobile_html, asin)
         mobile_snapshot = _extract_detail_snapshot(mobile_html or "")
         snapshot = _merge_detail_snapshots(
             desktop_snapshot,
@@ -1381,11 +1421,12 @@ def _get_detail_snapshot_cached(
             _detail_snapshot_is_complete(snapshot),
         )
 
-    # Un fallimento totale non va in cache: la ricerca successiva deve poter
-    # riprovare subito, invece di restare vuota per diversi minuti.
-    if _detail_snapshot_has_any_data(snapshot):
+    if not snapshot[0]:
+        LOGGER.info("Detail price asin=%s reason=price_not_verified retry_cached=true", asin)
+    # Cache anche gli esiti vuoti per evitare tentativi ripetuti dei visitatori.
+    if True:
         with _CACHE_LOCK:
-            _DETAIL_SNAPSHOT_CACHE[detail_url] = (now, snapshot)
+            _DETAIL_SNAPSHOT_CACHE[detail_url] = (time.time(), snapshot)
 
             if len(_DETAIL_SNAPSHOT_CACHE) > DETAIL_SNAPSHOT_CACHE_MAX:
                 oldest = sorted(
@@ -1435,6 +1476,16 @@ def _verify_product_detail_price(
 
     asin = str(verified.get("asin") or "").strip().upper()
     if len(asin) != 10:
+        return verified
+
+    link_asin = _asin_from_detail_url(str(verified.get("link_affiliato") or ""))
+    price = verified.get("prezzo_finale")
+    if (verified.get("source") == "creators_api_getitems"
+        and verified.get("prezzo_verificato") is True
+        and isinstance(price, (int, float)) and math.isfinite(price) and price > 0
+        and link_asin == asin
+        and 0 <= time.time() - verified.get("price_verified_at", 0) < 600):
+        LOGGER.info("Detail price asin=%s source=creators_preserved", asin)
         return verified
 
     detail_url = str(verified.get("detail_page_url") or "").strip()
@@ -1630,7 +1681,7 @@ def _html_has_search_product_signals(text: str) -> bool:
     )
 
 
-def _fetch_amazon_html(url: str, timeout: Optional[int] = None) -> Optional[str]:
+def _fetch_amazon_html(url: str, timeout: Optional[int] = None, single_attempt: bool = False) -> Optional[str]:
     """Scarica HTML Amazon con fallback adattivo e diagnostica essenziale."""
     request_timeout = max(3, int(timeout or HTML_TIMEOUT))
 
@@ -1672,6 +1723,9 @@ def _fetch_amazon_html(url: str, timeout: Optional[int] = None) -> Optional[str]
 
             if classification == "ok":
                 return response.text
+
+            if single_attempt:
+                return None
 
             # Se il server ci ha risposto velocemente ma con una pagina bloccata
             # o inutilizzabile, un fingerprint Safari può ottenere una risposta
@@ -1717,6 +1771,9 @@ def _fetch_amazon_html(url: str, timeout: Optional[int] = None) -> Optional[str]
                 "HTML curl profile=chrome error=%s",
                 type(exc).__name__,
             )
+
+    if single_attempt and HAS_CURL_CFFI and c_requests is not None:
+        return None
 
     # Fallback requests.Session con keep-alive/TLS riutilizzato per thread.
     try:

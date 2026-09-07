@@ -120,3 +120,11 @@ La ricerca propaga la scadenza della cache al conto alla rovescia. Durante l’a
 
 ## Schede semplificate
 Rimosso Dettagli e il titolo ripetuto. Eventuali note sul prezzo di riferimento e sulle vendite restano visibili. Pulsante principale: Vedi offerta; destinazione e tag affiliato invariati.
+
+
+## Recupero prezzi: interventi 1–8
+Conservati prezzi GetItems verificati per lo stesso ASIN entro 10 minuti. Aggiunti selettori priceToPay desktop/mobile; esclusi contesti rate e abbonamenti riconoscibili. Dettagli HTML accettati solo con ASIN selezionato corrispondente. Al massimo due tentativi di recupero (desktop e mobile, 300 ms di attesa), condivisi per URL canonico; anche fallimenti in cache 30 secondi. Log con esito HTTP e motivi del mancato recupero. Prezzi verificati prima nell’ordinamento crescente; messaggio Prezzo da verificare. Superati 19 test locali con dati simulati; non verificato il prezzo live del notebook B0GQZDM5WK. Il nuovo parser richiede collaudo sulle risposte effettive di Streamlit/Amazon.
+
+
+## Fine attesa ricerca
+Alla scadenza del conto alla rovescia viene mostrato l’invito a premere Cerca, senza passare al vecchio avviso di nessun prodotto recuperato. Anche una scadenza trascorsa mentre il visitatore era in un’altra scheda viene gestita. Accesso alla Vetrina disponibile dopo un recupero fallito. Non risolve eventuali blocchi Amazon: occorrono i log completi per diagnosticarli.
