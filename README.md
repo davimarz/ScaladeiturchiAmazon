@@ -69,3 +69,22 @@ Ogni click su Cerca reimposta Prezzo minimo. Creators API usa Price:LowToHigh; t
 ### Doppioni
 
 product_dedup.py elimina ASIN ripetuti e schede con lo stesso titolo normalizzato (almeno quattro parole) e la stessa immagine, anche con dimensioni immagine Amazon differenti. Taglie, colori e modelli scritti nel titolo restano distinti. Il controllo opera prima del conteggio dei risultati web/API, sul pool HAUL e come protezione finale nella UI e nel caricamento aggiuntivo. Non riconosce con certezza prodotti uguali con titoli e immagini differenti; evita accorpamenti basati sulla sola somiglianza. Se non ci sono abbastanza prodotti unici, l'elenco può contenerne meno di dieci.
+
+
+### Deduplicazione approfondita
+
+Il confronto ora usa anche ASIN ricavati dai link e titoli descrittivi normalizzati indipendentemente dall'immagine. Riconosce riordino delle parole, prefissi Amazon/sponsorizzato e alcuni sinonimi di colore. Mantiene numeri, taglie, quantità e suffissi modello: non fonde automaticamente modelli simili. EAN/GTIN/UPC vengono confrontati quando presenti. Un titolo generico corto non basta per unire due ASIN diversi. La UI ripete il controllo anche sui risultati già presenti in sessione.
+
+Titoli identici ma incompleti possono comunque nascondere varianti: non è possibile garantire identità fisica senza metadati affidabili. Per verificare duplicati con descrizioni completamente differenti servono esempi dei relativi link/ASIN. Conservata la prima scheda nell'ordine dei risultati; nessun prezzo viene trasferito da un'offerta all'altra.
+
+
+Per le scarpe di alcuni marchi riconosciuti, il confronto considera anche il modello eliminando descrizioni generiche (scarpe, sneaker, da ginnastica). Una destinazione uomo/donna assente in uno dei titoli non impedisce il confronto, ma destinazioni esplicitamente diverse restano distinte. Numeri di modello, taglie e colori restano significativi. Il caso Hypersprint 8 degli screenshot è coperto; Hyper LD donna rispetto a Hyper LD 6 uomo non viene automaticamente assimilato senza prova tramite link/ASIN.
+
+
+## Schede per modello con varianti (comportamento corrente)
+
+Questo raggruppamento sostituisce l'eliminazione delle offerte basata sul titolo. Solo lo stesso ASIN viene eliminato come doppione. ASIN distinti riconducibili allo stesso modello vengono conservati in variants; la scheda usa integralmente l'offerta dal prezzo verificato più basso e mostra altre varianti in un espansore, ciascuna con il proprio link.
+
+Taglia e colore sono letti dalla selezione del dettaglio HTML, quando riconoscibile. Codice modello e marca sono letti dalle tabelle prodotto quando disponibili. Senza questi metadati, per alcune scarpe si usa il nome del modello nel titolo; se non è riconoscibile, si mantengono schede separate. Hyper LD e Hyper LD 6 non vengono equiparati automaticamente. La taglia mancante resta da verificare. Nessun costo di spedizione viene inventato o sommato al prezzo prodotto.
+
+La ricerca mira a dieci gruppi distinti nei limiti esistenti. Carica altri 10 conserva e unisce le varianti già caricate; il numero di nuovi modelli può risultare inferiore al target. Nei dati scaduti vengono rimossi prezzi e sconti anche dalle varianti, evitando di ripristinarli durante il raggruppamento. Il riconoscimento universale di tutte le categorie richiederebbe dati strutturati aggiuntivi: non si raggruppa dalla sola foto.

@@ -87,6 +87,7 @@ RE_MONTHLY_BOUGHT = re.compile(
 
 _HTML_CACHE: dict[str, tuple[float, str]] = {}
 _PRIME_EVIDENCE: dict[str, tuple[float, bool]] = {}
+_VARIANT_EVIDENCE: dict[str, tuple[float, dict]] = {}
 _DETAIL_SNAPSHOT_CACHE: dict[
     str,
     tuple[
@@ -1283,6 +1284,38 @@ def _asin_from_detail_url(detail_url: str) -> str:
     match = RE_ASIN.search(str(detail_url or ""))
     return match.group(1).upper() if match else ""
 
+def _variant_metadata(html_text):
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    result = {}
+    for field, selector in (
+        ("size", "#variation_size_name .selection"),
+        ("color", "#variation_color_name .selection"),
+    ):
+        node = soup.select_one(selector)
+        if node is not None:
+            value = " ".join(node.get_text(" ", strip=True).split())
+            if value:
+                result[field] = value
+    for row in soup.select("#productDetails_techSpec_section_1 tr, #productDetails_detailBullets_sections1 tr"):
+        label = row.select_one("th")
+        value = row.select_one("td")
+        if label is None or value is None:
+            continue
+        label_text = " ".join(label.get_text(" ", strip=True).lower().split())
+        value_text = " ".join(value.get_text(" ", strip=True).split())
+        if label_text in {"numero modello articolo", "numero di modello", "item model number"}:
+            result["model_code"] = value_text
+        elif label_text in {"marca", "brand"}:
+            result["brand"] = value_text
+    byline = soup.select_one("#bylineInfo")
+    if byline is not None and "brand" not in result:
+        text = byline.get_text(" ", strip=True)
+        match = re.match(r"(?:Marca|Brand):\s*(.+)", text, re.I)
+        if match:
+            result["brand"] = match.group(1).strip()
+    return result
+
+
 def _get_detail_snapshot_cached(
     detail_url: str,
 ) -> tuple[
@@ -1320,6 +1353,9 @@ def _get_detail_snapshot_cached(
     if asin and desktop_html:
         with _CACHE_LOCK:
             _PRIME_EVIDENCE[asin] = (time.time(), prime_status.confirmed(desktop_html, asin))
+            _VARIANT_EVIDENCE[asin] = (time.time(), _variant_metadata(desktop_html))
+            if len(_VARIANT_EVIDENCE) > 256:
+                _VARIANT_EVIDENCE.pop(min(_VARIANT_EVIDENCE, key=lambda key: _VARIANT_EVIDENCE[key][0]), None)
             if len(_PRIME_EVIDENCE) > 256:
                 oldest = min(_PRIME_EVIDENCE, key=lambda key: _PRIME_EVIDENCE[key][0])
                 _PRIME_EVIDENCE.pop(oldest, None)
@@ -1415,6 +1451,10 @@ def _verify_product_detail_price(
         detail_image,
     ) = _get_detail_snapshot_cached(detail_url)
 
+    with _CACHE_LOCK:
+        variant_data = _VARIANT_EVIDENCE.get(asin)
+        if variant_data and time.time() - variant_data[0] < DETAIL_SNAPSHOT_TTL:
+            verified.update(variant_data[1])
     if detail_title:
         verified["titolo"] = detail_title
     if detail_image:
@@ -2723,7 +2763,7 @@ def _search_html_fallback(
                 if product_dedup.already_present(product, discovered + valid):
                     continue
                 valid.append(product)
-                if len(discovered) + len(valid) >= target:
+                if len(product_dedup.unique(discovered + valid)) >= target:
                     return valid
         return valid
 
@@ -2772,7 +2812,7 @@ def _search_html_fallback(
         pages_to_scan = range(1, max_pages + 1)
 
     for page in pages_to_scan:
-        if len(discovered) >= target or checked_candidates >= candidate_limit or time.monotonic() >= deadline:
+        if len(product_dedup.unique(discovered)) >= target or checked_candidates >= candidate_limit or time.monotonic() >= deadline:
             break
 
         diagnostic_pages_attempted += 1
@@ -2789,7 +2829,7 @@ def _search_html_fallback(
             diagnostic_html_received += 1
             merge_html_page(primary_html, page, page_seen)
 
-        if len(discovered) >= target:
+        if len(product_dedup.unique(discovered)) >= target:
             break
 
         # ------------------------------------------------------------
@@ -2807,10 +2847,10 @@ def _search_html_fallback(
 
         for html_text in alternate_pages:
             merge_html_page(html_text, page, page_seen)
-            if len(discovered) >= target:
+            if len(product_dedup.unique(discovered)) >= target:
                 break
 
-        if len(discovered) >= target:
+        if len(product_dedup.unique(discovered)) >= target:
             break
 
         # ------------------------------------------------------------
@@ -2829,10 +2869,10 @@ def _search_html_fallback(
 
         for html_text in mobile_pages:
             merge_html_page(html_text, page, page_seen)
-            if len(discovered) >= target:
+            if len(product_dedup.unique(discovered)) >= target:
                 break
 
-        if len(discovered) >= target:
+        if len(product_dedup.unique(discovered)) >= target:
             break
 
         # ------------------------------------------------------------
@@ -2865,7 +2905,7 @@ def _search_html_fallback(
             "HTML discovery keyword=%r page=%s total_discovered=%s target=%s",
             clean_keyword,
             page,
-            len(discovered),
+            len(product_dedup.unique(discovered)),
             target,
         )
 
@@ -2874,8 +2914,8 @@ def _search_html_fallback(
     # abbastanza ASIN, usa un indice web solo per trovare URL Amazon reali.
     # Poi la pagina prodotto Amazon resta la fonte di titolo/immagine/prezzo.
     # -----------------------------------------------------------------
-    if len(discovered) < target and checked_candidates < candidate_limit and time.monotonic() < deadline:
-        missing = target - len(discovered)
+    if len(product_dedup.unique(discovered)) < target and checked_candidates < candidate_limit and time.monotonic() < deadline:
+        missing = target - len(product_dedup.unique(discovered))
 
         external_products = _discover_amazon_products_external(
             keyword=clean_keyword,
@@ -2889,7 +2929,7 @@ def _search_html_fallback(
         discovered.extend(validate_candidates(external_products))
 
     # Il target conta prodotti già verificati, non candidati ancora da filtrare.
-    collected = list(discovered[:target])
+    collected = product_dedup.unique(discovered)[:target]
 
     if collected:
         diagnostic_reason = "ok"
@@ -3198,29 +3238,29 @@ def _offerte_uncached(
             seen_asins.add(asin)
             if product_dedup.already_present(product, products):
                 continue
-            product.setdefault("_amazon_position", len(products))
+            product.setdefault("_amazon_position", len(product_dedup.unique(products)))
             products.append(product)
 
-            if sort_type != "Quantità vendite" and len(products) >= target:
+            if sort_type != "Quantità vendite" and len(product_dedup.unique(products)) >= target:
                 break
 
             if (
                 sort_type == "Quantità vendite"
-                and len(products) >= api_candidate_target
+                and len(product_dedup.unique(products)) >= api_candidate_target
             ):
                 break
 
-        if sort_type != "Quantità vendite" and len(products) >= target:
+        if sort_type != "Quantità vendite" and len(product_dedup.unique(products)) >= target:
             break
 
         if (
             sort_type == "Quantità vendite"
-            and len(products) >= api_candidate_target
+            and len(product_dedup.unique(products)) >= api_candidate_target
         ):
             break
 
     # Se l'API ha già dato abbastanza prodotti, non tocchiamo l'HTML.
-    if len(products) >= target:
+    if len(product_dedup.unique(products)) >= target:
         if sort_type == "Prezzo minimo":
             products.sort(
                 key=lambda product: (
@@ -3237,16 +3277,16 @@ def _offerte_uncached(
                 )
             )
 
-        return products[:target]
+        return product_dedup.unique(products)[:target]
 
     # -----------------------------------------------------------------
     # 2) FALLBACK HTML SILENZIOSO.
     # Se API restituisce zero o pochi risultati, integriamo fino al target.
     # -----------------------------------------------------------------
     if not html_fallback_enabled():
-        return products[:target]
+        return product_dedup.unique(products)[:target]
 
-    missing = target - len(products)
+    missing = target - len(product_dedup.unique(products))
 
     html_products = _search_html_fallback(
         keyword=query,
@@ -3268,10 +3308,10 @@ def _offerte_uncached(
         seen_asins.add(asin)
         if product_dedup.already_present(product, products):
             continue
-        product.setdefault("_amazon_position", len(products))
+        product.setdefault("_amazon_position", len(product_dedup.unique(products)))
         products.append(product)
 
-        if len(products) >= target:
+        if len(product_dedup.unique(products)) >= target:
             break
 
     # L'ordinamento finale deve essere coerente anche quando le fonti sono miste.
@@ -3304,7 +3344,7 @@ def _offerte_uncached(
 
         products.sort(key=final_sales_key)
 
-    return products[:target]
+    return product_dedup.unique(products)[:target]
 
 
 def ottieni_vetrina_casuale(

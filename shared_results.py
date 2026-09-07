@@ -73,6 +73,7 @@ def _stale(entry, now, stale_for):
         return []
     data = copy.deepcopy(entry['data'])
     for product in data:
-        product.update(prezzo_finale=None, prezzo_iniziale=None,
-                       prezzo_verificato=False, sconto='', sconto_val=0)
+        for offer in [product] + list(product.get("variants", [])):
+            offer.update(prezzo_finale=None, prezzo_iniziale=None,
+                         prezzo_verificato=False, sconto='', sconto_val=0)
     return data

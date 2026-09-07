@@ -921,7 +921,7 @@ def _load_more() -> None:
         sorted(
             {
                 str(product.get("asin") or "").strip().upper()
-                for product in existing
+                for product in product_dedup.flatten(existing)
                 if str(product.get("asin") or "").strip()
             }
         )
@@ -938,17 +938,9 @@ def _load_more() -> None:
 
     if new_results is None:
         return
-    existing_asins = set(excluded_asins)
-    merged = list(existing)
-    for product in list(new_results or []):
-        asin = str(product.get("asin") or "").strip().upper()
-        if not asin or asin in existing_asins or product_dedup.already_present(product, merged):
-            continue
-        product.setdefault("_loaded_position", len(merged))
-        existing_asins.add(asin)
-        merged.append(product)
-        if len(merged) >= MAX_RESULTS:
-            break
+    merged = product_dedup.unique(existing + list(new_results or []))[:MAX_RESULTS]
+    for index, product in enumerate(merged):
+        product.setdefault("_loaded_position", index)
 
     st.session_state["offerte"] = _sort_loaded_products(
         merged, str(cfg.get("sort") or "Prezzo minimo")
@@ -1059,6 +1051,10 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     image_fallback_candidates = image_candidates[1:]
 
     safe_title = html.escape(title)
+    variant_label = html.escape(
+        "Taglia: " + str(product.get("size") or "da verificare")
+        + " · Colore: " + str(product.get("color") or "da verificare")
+    )
     safe_title_attr = html.escape(title, quote=True)
     safe_link = html.escape(link, quote=True)
     safe_image = html.escape(image_url, quote=True)
@@ -1219,6 +1215,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         + "</div>"
         "<div class='pcm-details'>"
         f"<div class='pcm-title'>{safe_title}</div>"
+        f"<div class='pcm-note'>{variant_label}</div>"
         f"<div class='pcm-prices'>{price_html}</div>"
         f"<div class='pcm-badges-row'>{badges_html}</div>"
         f"<div class='pcm-note'>{html.escape(note)}</div>"
@@ -1244,6 +1241,22 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     )
 
     st.markdown(card_html, unsafe_allow_html=True)
+    variants = product.get("variants", [])
+    if len(variants) > 1:
+        with st.expander(f"Altre varianti e offerte ({len(variants) - 1})"):
+            for variant in variants[1:]:
+                label = (
+                    f"Taglia: {variant.get('size') or 'da verificare'} · "
+                    f"Colore: {variant.get('color') or 'da verificare'}"
+                )
+                price = variant.get("prezzo_finale")
+                if variant.get("prezzo_verificato") is True and price:
+                    label += f" · €{_format_eur(float(price))}"
+                else:
+                    label += " · Prezzo da verificare"
+                st.write(label)
+                st.link_button("Acquista questa variante", variant["link_affiliato"])
+
 
 
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -1444,7 +1457,7 @@ if active_tab == "haul":
         # che rimuove i prezzi scaduti e limita il periodo di conservazione.
         st.session_state["haul_loaded_token"] = current_token
 
-    haul_products = st.session_state.get("offerte_haul", [])
+    haul_products = product_dedup.unique(st.session_state.get("offerte_haul", []))
 
     if haul_products:
         st.caption(
@@ -1497,7 +1510,7 @@ elif active_tab == "vetrina":
         # Nessun prezzo di una vecchia selezione dopo un refresh fallito.
         st.session_state["vetrina_loaded_token"] = current_token
 
-    showcase = st.session_state.get("offerte_vetrina", [])
+    showcase = product_dedup.unique(st.session_state.get("offerte_vetrina", []))
 
     if showcase:
         for index, product in enumerate(showcase):
@@ -1602,7 +1615,7 @@ elif active_tab == "cerca":
     _watch_quota_expiry()
 
 
-    results = st.session_state.get("offerte", [])
+    results = product_dedup.unique(st.session_state.get("offerte", []))
 
     if results:
         total = len(results)
