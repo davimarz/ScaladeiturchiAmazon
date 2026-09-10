@@ -2,6 +2,10 @@ __pycache__/
 *.pyc
 *.pyo
 *.db
+*.sqlite3
+.runtime/
+.pytest_cache/
+.coverage
 
 .streamlit/secrets.toml
 

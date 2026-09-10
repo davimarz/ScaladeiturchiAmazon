@@ -1,24 +1,24 @@
 <!doctype html>
 <html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-body{margin:0;font:14px/1.4 system-ui,sans-serif;color:#075985}section{background:#effaff;border:1px solid #7dd3fc;border-radius:12px;padding:10px}h2{font-size:16px;margin:0 0 6px}p{margin:6px 0}button{min-height:44px;border-radius:8px;padding:8px 14px;cursor:pointer;font:inherit;margin:6px 6px 0 0;border:1px solid #0284c7;color:#075985;background:white}button.primary{background:#0369a1;color:white}ol{padding-left:24px}a{color:#075985} [hidden]{display:none!important}
+body{margin:0;font:14px/1.45 system-ui,sans-serif;color:#334155}section{background:#fff;border:1px solid #dbeafe;border-radius:12px;padding:10px}h2{font-size:16px;margin:0 0 6px;color:#075985}p{margin:6px 0}button{min-height:44px;border-radius:8px;padding:8px 14px;cursor:pointer;font:inherit;margin:6px 6px 0 0;border:1px solid #0284c7;color:#075985;background:white}button.primary{background:#0369a1;color:white}button:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}[hidden]{display:none!important}
 </style></head><body>
 <section id="banner" hidden aria-label="Collegamento alla schermata Home">
-<h2>📲 Scala dei Turchi, sempre a portata di mano</h2>
-<p>Aggiungi il sito alla schermata Home e ritrova le offerte con un tocco.</p>
+<h2>Scala dei Turchi sulla schermata Home</h2>
+<p>Puoi aggiungere un collegamento al sito per riaprirlo rapidamente.</p>
 <button class="primary" id="help" aria-expanded="false" aria-controls="instructions">Mostrami come</button><button id="dismiss">Non ora</button>
 <div id="instructions" hidden>
-<p><strong>iPhone · Safari</strong><br>Apri Condividi, scegli “Aggiungi alla schermata Home” e conferma con “Aggiungi”.</p>
-<p><strong>Android · Chrome</strong><br>Apri il menu ⋮, scegli “Aggiungi a schermata Home” e conferma la creazione del collegamento.</p>
-<p>Se hai aperto il sito dentro un’altra app, aprilo prima in Safari o Chrome.</p>
-<p>Il collegamento apre questo sito e richiede Internet.</p>
+<p><strong>iPhone · Safari</strong><br>Apri Condividi, scegli “Aggiungi alla schermata Home” e conferma.</p>
+<p><strong>Android · Chrome</strong><br>Apri il menu, scegli “Aggiungi a schermata Home” e conferma.</p>
+<p>Il collegamento apre il sito e richiede una connessione Internet.</p>
 <button id="done">Chiudi</button>
 </div></section>
 <script>
-const KEY='scala_home_prompt_dismissed_v1';
+const KEY='scala_home_prompt_dismissed_v2';
 const REMIND_AFTER_MS=3*24*60*60*1000;
 const banner=document.getElementById('banner');
-function send(type,extra={}){window.parent.postMessage({isStreamlitMessage:true,type,...extra},'*');}
+function parentOrigin(){try{return document.referrer?new URL(document.referrer).origin:'*';}catch(e){return '*';}}
+function send(type,extra={}){window.parent.postMessage({isStreamlitMessage:true,type,...extra},parentOrigin());}
 function resize(){send('streamlit:setFrameHeight',{height:banner.hidden?0:Math.ceil(document.documentElement.scrollHeight)});}
 function shouldShow(now,last,mobile,standalone){return mobile&&!standalone&&(!Number.isFinite(last)||last<=0||now-last>=REMIND_AFTER_MS);}
 let initialized=false;
