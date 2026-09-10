@@ -1,13 +1,40 @@
-<!doctype html><html><body><script>
-function send(type, extra={}) { window.parent.postMessage({isStreamlitMessage:true,type,...extra}, '*'); }
-window.addEventListener('message', event => {
- if(event.data.type !== 'streamlit:render') return;
- try {
-  let id = localStorage.getItem('amazon_visitor_v1');
-  if(!id) { id = crypto.randomUUID(); localStorage.setItem('amazon_visitor_v1',id); }
+<!doctype html>
+<html lang="it">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body>
+<script>
+const KEY='amazon_visitor_v2';
+const TTL_MS=90*24*60*60*1000;
+function parentOrigin(){
+  try{return document.referrer?new URL(document.referrer).origin:'*';}catch(e){return '*';}
+}
+function send(type,extra={}){
+  window.parent.postMessage({isStreamlitMessage:true,type,...extra},parentOrigin());
+}
+function getIdentity(){
+  const now=Date.now();
+  try{
+    const raw=localStorage.getItem(KEY);
+    if(raw){
+      const parsed=JSON.parse(raw);
+      if(parsed&&typeof parsed.id==='string'&&Number(parsed.created)>0&&now-Number(parsed.created)<TTL_MS){
+        return parsed.id;
+      }
+    }
+    const id=crypto.randomUUID();
+    localStorage.setItem(KEY,JSON.stringify({id,created:now}));
+    return id;
+  }catch(e){
+    return null;
+  }
+}
+window.addEventListener('message',event=>{
+  if(event.source!==window.parent||event.data?.type!=='streamlit:render')return;
+  const id=getIdentity();
   send('streamlit:setComponentValue',{value:id,dataType:'json'});
- } catch(e) { send('streamlit:setComponentValue',{value:'storage_unavailable',dataType:'json'}); }
 });
 send('streamlit:componentReady',{apiVersion:1});
 send('streamlit:setFrameHeight',{height:0});
-</script></body></html>
+</script>
+</body>
+</html>
