@@ -36,10 +36,53 @@ def test_history_is_fifo_and_bounded():
     assert updated[-1] == products[-1]["asin"]
 
 
-def test_price_display_requires_verified_value():
-    assert catalog_service.price_is_displayable({"prezzo_verificato": True, "prezzo_finale": 10.0})
-    assert not catalog_service.price_is_displayable({"prezzo_verificato": False, "prezzo_finale": 10.0})
-    assert not catalog_service.price_is_displayable({"prezzo_verificato": True, "prezzo_finale": None})
+def test_verified_price_remains_displayable():
+    prepared = catalog_service._prepare_price_display({
+        "prezzo_verificato": True,
+        "prezzo_finale": 10.0,
+        "prezzo_iniziale": 12.0,
+    })
+    assert catalog_service.price_is_displayable(prepared)
+    assert prepared["_price_display_source"] == "amazon_verified"
+
+
+def test_trusted_amazon_serp_price_is_displayable_and_discount_is_computed():
+    prepared = catalog_service._prepare_price_display({
+        "prezzo_verificato": False,
+        "prezzo_finale": 39.99,
+        "prezzo_iniziale": 49.99,
+        "_serp_price_confidence": "base_price_node",
+    })
+    assert catalog_service.price_is_displayable(prepared)
+    assert prepared["_price_display_source"] == "amazon_serp"
+    assert prepared["sconto"] == "-20%"
+    assert prepared["sconto_val"] == 20
+
+
+def test_failed_detail_can_reuse_preserved_trusted_serp_price():
+    prepared = catalog_service._prepare_price_display({
+        "prezzo_verificato": False,
+        "prezzo_finale": None,
+        "prezzo_iniziale": None,
+        "_search_prezzo_finale": 25.0,
+        "_search_prezzo_iniziale": 30.0,
+        "_serp_price_confidence": "base_price_node",
+    })
+    assert catalog_service.price_is_displayable(prepared)
+    assert prepared["prezzo_finale"] == 25.0
+    assert prepared["prezzo_iniziale"] == 30.0
+    assert prepared["sconto"] == "-17%"
+
+
+def test_untrusted_unverified_price_stays_hidden():
+    prepared = catalog_service._prepare_price_display({
+        "prezzo_verificato": False,
+        "prezzo_finale": 10.0,
+        "prezzo_iniziale": 12.0,
+        "_serp_price_confidence": "missing",
+    })
+    assert not catalog_service.price_is_displayable(prepared)
+    assert prepared["_price_display_source"] == ""
 
 
 def test_showcase_keyword_is_stable_inside_cache_window():
