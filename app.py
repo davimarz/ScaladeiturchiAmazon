@@ -272,7 +272,7 @@ if active_tab == "haul":
     if partner_tag and st.session_state.get("haul_loaded_token") != current_token:
         try:
             with st.spinner("Sto cercando nuove proposte HAUL…"), telemetry.timed("haul_load_seconds"):
-                products = catalog_service.get_haul_selection(10, current_token, st.session_state.get("haul_seen_asins", []))
+                products = catalog_service.get_haul_selection(app_constants.DISPLAY_BATCH_SIZE, current_token, st.session_state.get("haul_seen_asins", []))
             st.session_state["offerte_haul"] = product_dedup.unique(products or [])
             st.session_state["haul_seen_asins"] = catalog_service.extend_history(st.session_state.get("haul_seen_asins", []), st.session_state["offerte_haul"], catalog_service.HAUL_HISTORY_LIMIT)
             st.session_state["haul_loaded_token"] = current_token
@@ -290,7 +290,7 @@ if active_tab == "haul":
         ui_components.render_price_notice()
         for index, product in enumerate(products):
             ui_components.render_product_card(product, eager_image=index == 0)
-        st.button("Mostrami altri 10", key="haul_more", on_click=_open_haul, use_container_width=True)
+        st.button(f"Mostrami altri {app_constants.DISPLAY_BATCH_SIZE}", key="haul_more", on_click=_open_haul, use_container_width=True)
         ui_components.render_back_to_top()
     else:
         st.info("Nessun prodotto HAUL disponibile adesso.")
@@ -302,7 +302,7 @@ elif active_tab == "vetrina":
     if partner_tag and st.session_state.get("vetrina_loaded_token") != current_token:
         try:
             with st.spinner("Sto aggiornando la Vetrina…"), telemetry.timed("showcase_load_seconds"):
-                products = catalog_service.get_showcase_selection(3, current_token, st.session_state.get("vetrina_seen_asins", []))
+                products = catalog_service.get_showcase_selection(app_constants.DISPLAY_BATCH_SIZE, current_token, st.session_state.get("vetrina_seen_asins", []))
             st.session_state["offerte_vetrina"] = product_dedup.unique(products or [])
             st.session_state["vetrina_seen_asins"] = catalog_service.extend_history(st.session_state.get("vetrina_seen_asins", []), st.session_state["offerte_vetrina"], catalog_service.SHOWCASE_HISTORY_LIMIT)
             st.session_state["vetrina_loaded_token"] = current_token
@@ -318,7 +318,7 @@ elif active_tab == "vetrina":
         ui_components.render_price_notice()
         for index, product in enumerate(products):
             ui_components.render_product_card(product, eager_image=index == 0)
-        st.button("Aggiorna le proposte", key="showcase_more", on_click=_open_vetrina, use_container_width=True)
+        st.button(f"Aggiorna altre {app_constants.DISPLAY_BATCH_SIZE} proposte", key="showcase_more", on_click=_open_vetrina, use_container_width=True)
         ui_components.render_back_to_top()
     else:
         st.link_button("Scopri le offerte su Amazon", amazon_gateway.build_search_link("offerte del giorno"), use_container_width=True)
@@ -394,7 +394,7 @@ elif active_tab == "cerca":
 
         status = _quota()
         can_load = len(results) < MAX_RESULTS and status.get("remaining") != 0
-        if st.button("Carica altri 10", key="load_more", use_container_width=True, disabled=not can_load):
+        if st.button(f"Carica altri {app_constants.SEARCH_PAGE_SIZE}", key="load_more", use_container_width=True, disabled=not can_load):
             if _search_allowed():
                 _load_search(min(app_constants.SEARCH_PAGE_SIZE, MAX_RESULTS - len(results)), append=True)
                 st.rerun()

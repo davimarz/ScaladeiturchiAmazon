@@ -14,6 +14,7 @@ HAUL_POOL_TTL = 300
 SHOWCASE_POOL_TTL = 300
 HAUL_HISTORY_LIMIT = 50
 SHOWCASE_HISTORY_LIMIT = 24
+DISPLAY_BATCH_SIZE = 4
 
 SHOWCASE_KEYWORDS = (
     "offerte tecnologia",
@@ -77,11 +78,11 @@ def _haul_pool(partner_tag: str) -> list[dict[str, Any]]:
     return products
 
 
-def get_haul_selection(item_count: int = 10, refresh_token: str | None = None, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
+def get_haul_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: str | None = None, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
     tag = amazon_gateway.get_partner_tag()
     if not tag:
         return []
-    target = max(1, min(int(item_count or 10), 10))
+    target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), 10))
     pool = shared_results.get(
         ("haul-pool-v3", tag),
         HAUL_POOL_TTL,
@@ -106,11 +107,11 @@ def _showcase_pool(tag: str, keyword: str) -> list[dict[str, Any]]:
     return _stamp(products or [])
 
 
-def get_showcase_selection(item_count: int = 3, refresh_token: str | None = None, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
+def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: str | None = None, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
     tag = amazon_gateway.get_partner_tag()
     if not tag:
         return []
-    target = max(1, min(int(item_count or 3), 3))
+    target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
     token = str(refresh_token or time.time_ns())
     start = _seed(token) % len(SHOWCASE_KEYWORDS)
     combined: list[dict[str, Any]] = []
