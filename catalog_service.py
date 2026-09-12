@@ -15,25 +15,10 @@ import telemetry
 HAUL_POOL_TTL = 300
 SHOWCASE_POOL_TTL = 30 * 60
 SHOWCASE_STALE_FOR = 24 * 60 * 60
-SHOWCASE_FETCH_COUNT = 6
+SHOWCASE_FETCH_COUNT = 12
 HAUL_HISTORY_LIMIT = 50
 SHOWCASE_HISTORY_LIMIT = 24
 DISPLAY_BATCH_SIZE = 4
-
-SHOWCASE_KEYWORDS = (
-    "offerte tecnologia",
-    "offerte casa cucina",
-    "offerte cuffie bluetooth",
-    "offerte smartwatch",
-    "offerte sport fitness",
-    "offerte cura persona",
-    "offerte accessori smartphone",
-    "offerte elettrodomestici",
-    "offerte scarpe",
-    "offerte zaini accessori",
-    "offerte amazon",
-    "offerte del giorno",
-)
 
 
 def _asin(product: dict[str, Any]) -> str:
@@ -51,13 +36,7 @@ def _positive_float(value: Any) -> float | None:
 
 
 def _prepare_price_display(product: dict[str, Any]) -> dict[str, Any]:
-    """Expose prices only when they come from an explicit Amazon price signal.
-
-    Verified detail/HAUL prices remain first-class. Search-result prices may also
-    be displayed when the Amazon SERP parser identified the base price node. If
-    detail verification later failed, the original SERP values are recovered
-    from the preserved `_search_*` fields instead of launching more requests.
-    """
+    """Expose prices only when they come from an explicit Amazon price signal."""
     prepared = dict(product)
     verified = prepared.get("prezzo_verificato") is True
     serp_confidence = str(prepared.get("_serp_price_confidence") or "").strip().lower()
@@ -155,19 +134,19 @@ def get_haul_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: str 
     return _sample_fresh(pool, target, token, exclude_asins)
 
 
-def _showcase_keyword(now: float | None = None) -> str:
-    """Rotate the showcase category only when its shared cache expires."""
+def _showcase_page_index(now: float | None = None) -> int:
+    """Rotate the direct Amazon showcase page only when shared cache expires."""
     current = float(now if now is not None else time.time())
     bucket = int(current // SHOWCASE_POOL_TTL)
-    return SHOWCASE_KEYWORDS[bucket % len(SHOWCASE_KEYWORDS)]
+    return bucket % len(amazon_html.SHOWCASE_PAGES)
 
 
 def _showcase_pool(tag: str) -> list[dict[str, Any]]:
-    keyword = _showcase_keyword()
+    page_index = _showcase_page_index()
     started = time.perf_counter()
     try:
-        products = amazon_html.fetch_search_products_fast(
-            keyword=keyword,
+        products = amazon_html.fetch_showcase_products_fast(
+            page_index=page_index,
             partner_tag=tag,
             item_count=SHOWCASE_FETCH_COUNT,
         )
@@ -191,8 +170,11 @@ def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: 
     target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
     token = str(refresh_token or time.time_ns())
 
+    # The pool is loaded from direct Amazon showcase pages, never from search
+    # engines. Clicking Vetrina only resamples this pool; it does not trigger a
+    # new network request while the shared cache is fresh.
     pool = shared_results.get(
-        ("showcase-pool-v4", tag),
+        ("showcase-pool-v5", tag),
         SHOWCASE_POOL_TTL,
         lambda: _showcase_pool(tag),
         retry=60,

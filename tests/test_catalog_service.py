@@ -85,24 +85,24 @@ def test_untrusted_unverified_price_stays_hidden():
     assert prepared["_price_display_source"] == ""
 
 
-def test_showcase_keyword_is_stable_inside_cache_window():
+def test_showcase_page_is_stable_inside_cache_window():
     bucket_start = catalog_service.SHOWCASE_POOL_TTL * 5
-    first = catalog_service._showcase_keyword(bucket_start)
-    second = catalog_service._showcase_keyword(bucket_start + catalog_service.SHOWCASE_POOL_TTL - 1)
+    first = catalog_service._showcase_page_index(bucket_start)
+    second = catalog_service._showcase_page_index(bucket_start + catalog_service.SHOWCASE_POOL_TTL - 1)
     assert first == second
 
 
-def test_showcase_pool_uses_single_fast_fetch(monkeypatch):
+def test_showcase_pool_uses_one_direct_fetch(monkeypatch):
     calls = []
 
-    def fake_fetch(keyword: str, partner_tag: str, item_count: int):
-        calls.append((keyword, partner_tag, item_count))
+    def fake_fetch(page_index: int, partner_tag: str, item_count: int):
+        calls.append((page_index, partner_tag, item_count))
         return [_product(i) for i in range(item_count)]
 
-    monkeypatch.setattr(catalog_service.amazon_html, "fetch_search_products_fast", fake_fetch)
+    monkeypatch.setattr(catalog_service.amazon_html, "fetch_showcase_products_fast", fake_fetch)
     products = catalog_service._showcase_pool("tag-21")
 
     assert len(calls) == 1
     assert calls[0][1] == "tag-21"
-    assert calls[0][2] == catalog_service.SHOWCASE_FETCH_COUNT == 6
-    assert len(products) == 6
+    assert calls[0][2] == catalog_service.SHOWCASE_FETCH_COUNT == 12
+    assert len(products) == 12
