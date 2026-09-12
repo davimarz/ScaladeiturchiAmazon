@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 import time
 from typing import Any, Iterable
@@ -39,11 +40,67 @@ def _asin(product: dict[str, Any]) -> str:
     return str(product.get("asin") or "").strip().upper()
 
 
+def _positive_float(value: Any) -> float | None:
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(candidate) or candidate <= 0:
+        return None
+    return candidate
+
+
+def _prepare_price_display(product: dict[str, Any]) -> dict[str, Any]:
+    """Expose prices only when they come from an explicit Amazon price signal.
+
+    Verified detail/HAUL prices remain first-class. Search-result prices may also
+    be displayed when the Amazon SERP parser identified the base price node. If
+    detail verification later failed, the original SERP values are recovered
+    from the preserved `_search_*` fields instead of launching more requests.
+    """
+    prepared = dict(product)
+    verified = prepared.get("prezzo_verificato") is True
+    serp_confidence = str(prepared.get("_serp_price_confidence") or "").strip().lower()
+    trusted_serp = serp_confidence == "base_price_node"
+
+    final_price = _positive_float(prepared.get("prezzo_finale"))
+    old_price = _positive_float(prepared.get("prezzo_iniziale"))
+
+    if final_price is None and trusted_serp:
+        final_price = _positive_float(prepared.get("_search_prezzo_finale"))
+        old_price = _positive_float(prepared.get("_search_prezzo_iniziale"))
+        if final_price is not None:
+            prepared["prezzo_finale"] = final_price
+            prepared["prezzo_iniziale"] = old_price
+
+    displayable = final_price is not None and (verified or trusted_serp)
+    prepared["_price_displayable"] = displayable
+
+    if not displayable:
+        prepared["_price_display_source"] = ""
+        return prepared
+
+    prepared["_price_display_source"] = "amazon_verified" if verified else "amazon_serp"
+    prepared["prezzo_finale"] = final_price
+
+    if old_price is not None and old_price > final_price:
+        prepared["prezzo_iniziale"] = old_price
+        if not str(prepared.get("sconto") or "").strip():
+            discount_pct = int(round((old_price - final_price) / old_price * 100))
+            if discount_pct > 0:
+                prepared["sconto"] = f"-{discount_pct}%"
+                prepared["sconto_val"] = discount_pct
+    else:
+        prepared["prezzo_iniziale"] = None
+
+    return prepared
+
+
 def _stamp(products: Iterable[dict[str, Any]], fetched_at: float | None = None) -> list[dict[str, Any]]:
     stamp = float(fetched_at or time.time())
     result: list[dict[str, Any]] = []
     for product in product_dedup.unique(list(products or [])):
-        copy = dict(product)
+        copy = _prepare_price_display(dict(product))
         copy.setdefault("_fetched_at", stamp)
         copy.setdefault("_source_label", str(copy.get("source") or "Amazon"))
         result.append(copy)
@@ -134,9 +191,6 @@ def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: 
     target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
     token = str(refresh_token or time.time_ns())
 
-    # One shared Amazon-only pool for the whole app. A click merely resamples it;
-    # it does not launch another Amazon search. If refresh fails, stale cached
-    # data can continue to serve the showcase for up to one day.
     pool = shared_results.get(
         ("showcase-pool-v4", tag),
         SHOWCASE_POOL_TTL,
@@ -163,7 +217,9 @@ def search_products(keyword: str, sort_type: str, prime_only: bool, item_count: 
 
 
 def price_is_displayable(product: dict[str, Any]) -> bool:
-    return product.get("prezzo_verificato") is True and product.get("prezzo_finale") is not None
+    if product.get("_price_displayable") is True:
+        return _positive_float(product.get("prezzo_finale")) is not None
+    return product.get("prezzo_verificato") is True and _positive_float(product.get("prezzo_finale")) is not None
 
 
 def extend_history(history: Iterable[str], products: Iterable[dict[str, Any]], limit: int) -> list[str]:
