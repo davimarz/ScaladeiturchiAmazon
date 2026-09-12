@@ -106,3 +106,38 @@ def test_showcase_pool_uses_one_direct_fetch(monkeypatch):
     assert calls[0][1] == "tag-21"
     assert calls[0][2] == catalog_service.SHOWCASE_FETCH_COUNT == 12
     assert len(products) == 12
+
+
+def test_showcase_enriches_only_selected_four(monkeypatch):
+    pool = [_product(i) for i in range(12)]
+    calls = []
+
+    monkeypatch.setattr(catalog_service.amazon_gateway, "get_partner_tag", lambda: "tag-21")
+    monkeypatch.setattr(catalog_service.shared_results, "get", lambda *args, **kwargs: pool)
+
+    def fake_enrich(products):
+        items = list(products)
+        calls.append([item["asin"] for item in items])
+        enriched = []
+        for index, item in enumerate(items):
+            copy = dict(item)
+            copy["prezzo_verificato"] = True
+            copy["prezzo_finale"] = 20.0 + index
+            copy["prezzo_iniziale"] = 30.0 + index
+            enriched.append(copy)
+        return enriched
+
+    monkeypatch.setattr(catalog_service.amazon_gateway, "enrich_product_details", fake_enrich)
+
+    products = catalog_service.get_showcase_selection(
+        item_count=4,
+        refresh_token="showcase-test",
+        exclude_asins=(),
+    )
+
+    assert len(calls) == 1
+    assert len(calls[0]) == 4
+    assert len(products) == 4
+    assert all(product["prezzo_verificato"] is True for product in products)
+    assert all(catalog_service.price_is_displayable(product) for product in products)
+    assert all(product.get("sconto") for product in products)
