@@ -33,7 +33,7 @@ def enrich_product_details(products: Iterable[dict]) -> list[dict]:
 
     def enrich(product: dict) -> dict:
         try:
-            return dict(amazon_api._verify_product_detail_price(dict(product)) or product)
+            return dict(amazon_html.enrich_product_detail_fast(dict(product)) or product)
         except Exception:
             return dict(product)
 
