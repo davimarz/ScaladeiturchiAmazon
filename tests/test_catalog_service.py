@@ -43,8 +43,9 @@ def test_price_display_requires_verified_value():
 
 
 def test_showcase_keyword_is_stable_inside_cache_window():
-    first = catalog_service._showcase_keyword(10_000.0)
-    second = catalog_service._showcase_keyword(10_000.0 + catalog_service.SHOWCASE_POOL_TTL - 1)
+    bucket_start = catalog_service.SHOWCASE_POOL_TTL * 5
+    first = catalog_service._showcase_keyword(bucket_start)
+    second = catalog_service._showcase_keyword(bucket_start + catalog_service.SHOWCASE_POOL_TTL - 1)
     assert first == second
 
 
