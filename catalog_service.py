@@ -183,8 +183,17 @@ def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: 
     if not selected:
         return []
 
+    # `product_dedup.unique()` attaches a presentation-only `variants` list.
+    # Detail enrichment must work on the selected card itself; otherwise a
+    # later dedup/flatten can restore the old variant and discard verified
+    # price fields from the detail page.
+    selected_for_detail = [
+        {key: value for key, value in dict(product).items() if key != "variants"}
+        for product in selected
+    ]
+
     started = time.perf_counter()
-    enriched = amazon_gateway.enrich_product_details(selected)
+    enriched = amazon_gateway.enrich_product_details(selected_for_detail)
     enriched = _stamp(enriched)
     telemetry.observe("showcase_detail_enrich_seconds", time.perf_counter() - started)
     telemetry.observe_value(
