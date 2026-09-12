@@ -174,7 +174,7 @@ def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: 
     # engines. Clicking Vetrina only resamples this pool; it does not trigger a
     # new network request while the shared cache is fresh.
     pool = shared_results.get(
-        ("showcase-pool-v5", tag),
+        ("showcase-pool-v6", tag),
         SHOWCASE_POOL_TTL,
         lambda: _showcase_pool(tag),
         retry=60,
