@@ -88,6 +88,21 @@ def _open_vetrina() -> None:
     _clear_query_params()
 
 
+def _set_search_suggestion(suggestion: str) -> None:
+    """Update the text-input state from a widget callback before the rerun renders it."""
+    st.session_state["search_keyword_input"] = suggestion
+    st.session_state["search_notice"] = ""
+
+
+def _clear_search() -> None:
+    """Clear search-related state safely from a widget callback."""
+    st.session_state["search_keyword_input"] = ""
+    st.session_state["offerte"] = []
+    st.session_state["has_searched"] = False
+    st.session_state["search_notice"] = ""
+    st.session_state["current_page"] = 1
+
+
 def _valid_uuid(value: object) -> str | None:
     try:
         parsed = uuid.UUID(str(value))
@@ -329,22 +344,20 @@ elif active_tab == "cerca":
     suggestion_cols = st.columns(3)
     for index, suggestion in enumerate(app_constants.SUGGESTED_SEARCHES[:6]):
         with suggestion_cols[index % 3]:
-            if st.button(suggestion, key=f"suggest_{index}", use_container_width=True):
-                st.session_state["search_keyword_input"] = suggestion
-                st.rerun()
+            st.button(
+                suggestion,
+                key=f"suggest_{index}",
+                use_container_width=True,
+                on_click=_set_search_suggestion,
+                args=(suggestion,),
+            )
 
     opt1, opt2 = st.columns([4, 1])
     with opt1:
         st.radio("Ordina per", app_constants.SORT_OPTIONS, horizontal=True, key="search_sort")
         st.checkbox("Solo prodotti Prime", key="search_prime_only")
     with opt2:
-        if st.button("Cancella", key="clear_search", use_container_width=True):
-            st.session_state["search_keyword_input"] = ""
-            st.session_state["offerte"] = []
-            st.session_state["has_searched"] = False
-            st.session_state["search_notice"] = ""
-            st.session_state["current_page"] = 1
-            st.rerun()
+        st.button("Cancella", key="clear_search", use_container_width=True, on_click=_clear_search)
     st.caption("“Più venduti” usa indicatori di popolarità disponibili da Amazon; non è un conteggio esatto delle unità vendute.")
 
     if submitted:
