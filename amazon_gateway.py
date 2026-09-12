@@ -21,7 +21,13 @@ def fetch_haul_products(partner_tag: str) -> list[dict]:
 
 
 def enrich_product_details(products: Iterable[dict]) -> list[dict]:
-    items = [dict(product) for product in products or []]
+    # Drop the presentation-only `variants` wrapper before enriching. Keeping it
+    # would cause product_dedup.unique() to flatten back to the pre-enrichment
+    # variant and discard the newly verified price fields.
+    items = [
+        {key: value for key, value in dict(product).items() if key != "variants"}
+        for product in products or []
+    ]
     if not items:
         return []
 
