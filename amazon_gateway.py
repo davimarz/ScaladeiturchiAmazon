@@ -3,9 +3,10 @@ from __future__ import annotations
 from typing import Iterable
 
 import amazon_api
+import amazon_html
+import creators_api
 
 MAX_RESULTS = amazon_api.MAX_RESULTS
-HAUL_STORE_URL = amazon_api.HAUL_STORE_URL
 BudgetUnavailable = amazon_api.api_budget.BudgetUnavailable
 RetryPending = amazon_api.shared_results.RetryPending
 
@@ -15,10 +16,7 @@ def get_partner_tag() -> str:
 
 
 def fetch_haul_products(partner_tag: str) -> list[dict]:
-    html_text = amazon_api._fetch_amazon_html(amazon_api.HAUL_STORE_URL)
-    if not html_text:
-        raise BudgetUnavailable("Pagina HAUL temporaneamente non leggibile")
-    return amazon_api._extract_haul_products_from_html(html_text, partner_tag=partner_tag)
+    return amazon_html.fetch_haul_products(partner_tag)
 
 
 def search_products(
@@ -30,18 +28,15 @@ def search_products(
     cache_buster: str | None = None,
     partner_tag_override: str | None = None,
 ) -> list[dict]:
-    kwargs = {
-        "keyword": keyword,
-        "sort_type": sort_type,
-        "solo_spedizione_gratuita": bool(prime_only),
-        "item_count": item_count,
-        "exclude_asins": tuple(exclude_asins),
-    }
-    if cache_buster is not None:
-        kwargs["_cache_buster"] = cache_buster
-    if partner_tag_override is not None:
-        kwargs["_partner_tag_override"] = partner_tag_override
-    return amazon_api.ottieni_offerte_avanzate(**kwargs)
+    return creators_api.search(
+        keyword=keyword,
+        sort_type=sort_type,
+        prime_only=prime_only,
+        item_count=item_count,
+        exclude_asins=exclude_asins,
+        cache_buster=cache_buster,
+        partner_tag_override=partner_tag_override,
+    )
 
 
 def build_search_link(keyword: str) -> str:
