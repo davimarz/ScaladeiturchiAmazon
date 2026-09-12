@@ -88,12 +88,6 @@ def _open_vetrina() -> None:
     _clear_query_params()
 
 
-def _set_search_suggestion(suggestion: str) -> None:
-    """Update the text-input state from a widget callback before the rerun renders it."""
-    st.session_state["search_keyword_input"] = suggestion
-    st.session_state["search_notice"] = ""
-
-
 def _clear_search() -> None:
     """Clear search-related state safely from a widget callback."""
     st.session_state["search_keyword_input"] = ""
@@ -335,29 +329,16 @@ elif active_tab == "cerca":
         else:
             st.caption(f"Ricerche disponibili nell’ultima ora: {status.get('remaining')} su {_search_limit()}")
 
-    col_search, col_button = st.columns([5, 1], gap="small")
+    col_search, col_button, col_clear = st.columns([5, 1, 1], gap="small")
     with col_search:
         st.text_input("Prodotto", placeholder="Es. cuffie bluetooth, scarpe running, friggitrice ad aria…", label_visibility="collapsed", key="search_keyword_input")
     with col_button:
         submitted = st.button("Cerca", key="search_submit", type="primary", use_container_width=True, disabled=not st.session_state.get("visitor_id") or status.get("remaining") == 0)
-
-    suggestion_cols = st.columns(3)
-    for index, suggestion in enumerate(app_constants.SUGGESTED_SEARCHES[:6]):
-        with suggestion_cols[index % 3]:
-            st.button(
-                suggestion,
-                key=f"suggest_{index}",
-                use_container_width=True,
-                on_click=_set_search_suggestion,
-                args=(suggestion,),
-            )
-
-    opt1, opt2 = st.columns([4, 1])
-    with opt1:
-        st.radio("Ordina per", app_constants.SORT_OPTIONS, horizontal=True, key="search_sort")
-        st.checkbox("Solo prodotti Prime", key="search_prime_only")
-    with opt2:
+    with col_clear:
         st.button("Cancella", key="clear_search", use_container_width=True, on_click=_clear_search)
+
+    st.radio("Ordina per", app_constants.SORT_OPTIONS, horizontal=True, key="search_sort")
+    st.checkbox("Solo prodotti Prime", key="search_prime_only")
     st.caption("“Più venduti” usa indicatori di popolarità disponibili da Amazon; non è un conteggio esatto delle unità vendute.")
 
     if submitted:
