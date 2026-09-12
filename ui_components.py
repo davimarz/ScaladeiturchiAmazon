@@ -37,7 +37,6 @@ html{scroll-behavior:smooth}
 .brand p{margin:5px 0 0!important;color:var(--muted);font-size:.82rem!important;line-height:1.35!important}
 .section-kicker{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--brand-dark);margin:7px 0 5px}
 
-/* Navigation */
 div[data-testid="stHorizontalBlock"]{gap:.55rem!important}
 button[data-testid="stBaseButton-primary"]{background:var(--brand)!important;border:1px solid var(--brand)!important;color:#fff!important;box-shadow:none!important;font-weight:700!important}
 button[data-testid="stBaseButton-primary"]:hover{background:var(--brand-dark)!important;border-color:var(--brand-dark)!important}
@@ -46,24 +45,24 @@ button[data-testid="stBaseButton-secondary"]:hover{border-color:#7aaed0!importan
 .stButton>button,.stLinkButton>a{min-height:44px!important;border-radius:var(--r-control)!important;font-size:.86rem!important}
 .stTextInput input{min-height:44px!important;font-size:16px!important;border-radius:var(--r-control)!important}
 
-/* Intro/info */
 .promo{background:#fff;border:1px solid var(--border);border-left:4px solid var(--brand);border-radius:var(--r-card);padding:8px 10px;margin:6px 0 8px;font-size:.82rem;line-height:1.42;color:#334155}
 .haul-badge{display:inline-block;background:#fff4e8;color:#a84b08;border:1px solid #fed7aa;border-radius:999px;padding:2px 7px;margin-right:5px;font-size:.70rem;font-weight:800;letter-spacing:.03em}
 .compliance{font-size:.73rem!important;line-height:1.42!important;color:var(--muted);background:#f8fafc;border:1px solid #e2e8f0;border-radius:var(--r-control);padding:6px 8px;margin:6px 0 8px}
 .compliance details{cursor:pointer}.compliance summary{font-weight:700;color:#475569}
 
-/* Product cards */
 .product-card{background:#fff;border:1px solid var(--border);border-radius:var(--r-card);padding:10px;margin:0 0 9px;box-shadow:0 2px 9px rgba(15,23,42,.04);transition:transform .14s ease,box-shadow .14s ease,border-color .14s ease}
 .product-card:hover{transform:translateY(-1px);box-shadow:0 5px 16px rgba(15,23,42,.07);border-color:#bdd8ea}
 .product-grid{display:grid;grid-template-columns:minmax(132px,198px) minmax(0,1fr);gap:12px;align-items:start}
 .product-image-link{display:block;border-radius:9px}
-.product-image{display:block;width:100%;aspect-ratio:1/1;object-fit:contain;background:#fff;border-radius:9px}
+.product-image,.product-image-object{display:block;width:100%;aspect-ratio:1/1;background:#fff;border-radius:9px}
+.product-image{object-fit:contain}.product-image-object{pointer-events:none;border:0;overflow:hidden}
 .product-placeholder{display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:1/1;border-radius:9px;background:#f8fafc;border:1px dashed #cbd5e1;color:#64748b;font-size:.72rem;text-align:center;padding:10px}
 .product-title-link{text-decoration:none!important;color:inherit!important}
 h3.product-title,.product-title{font-size:.90rem!important;font-weight:700!important;line-height:1.27!important;color:var(--text)!important;margin:1px 0 5px!important;padding:0!important;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-height:3.81em}
 .product-title-link:hover .product-title{color:var(--brand-dark)!important;text-decoration:underline}
 .price-row{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;margin:3px 0 4px}
 .price{font-size:1.40rem!important;line-height:1.08!important;font-weight:800!important;color:var(--success)}
+.price-unavailable{font-size:.87rem!important;line-height:1.25!important;font-weight:700!important;color:#526173}
 .old{font-size:.80rem;color:#64748b;text-decoration:line-through}.discount{font-size:.79rem;font-weight:700;color:var(--warning)}
 .meta{font-size:.75rem!important;color:#526173;line-height:1.35;margin:4px 0}
 .trust{font-size:.73rem!important;line-height:1.35!important;color:#64748b;background:#f8fafc;border:1px solid #eef2f7;border-radius:7px;padding:5px 7px;margin-top:5px}
@@ -123,6 +122,37 @@ def _image_url(url: str) -> str:
     return raw
 
 
+def _image_candidates(product: dict) -> list[str]:
+    values = [product.get("immagine_url")]
+    fallbacks = product.get("immagine_fallback_urls") or []
+    if isinstance(fallbacks, str):
+        fallbacks = [fallbacks]
+    values.extend(fallbacks)
+    result: list[str] = []
+    for value in values:
+        clean = _image_url(str(value or ""))
+        if clean and clean not in result:
+            result.append(clean)
+    return result[:4]
+
+
+def _image_markup(product: dict, link: str, title: str, eager_image: bool) -> str:
+    candidates = _image_candidates(product)
+    if not candidates:
+        return "<div class='product-placeholder' role='img' aria-label='Immagine non disponibile'>Immagine non disponibile</div>"
+
+    fallback = "<div class='product-placeholder' role='img' aria-label='Immagine non disponibile'>Immagine non disponibile</div>"
+    for url in reversed(candidates):
+        fallback = (
+            f"<object class='product-image-object' data='{html.escape(url, quote=True)}' type='image/jpeg' "
+            f"aria-label='{html.escape(title, quote=True)}'>{fallback}</object>"
+        )
+    return (
+        f"<a class='product-image-link' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored' "
+        f"aria-label='Apri {html.escape(title, quote=True)} su Amazon'>{fallback}</a>"
+    )
+
+
 def _format_eur(value: float) -> str:
     return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
@@ -162,7 +192,6 @@ def render_price_notice() -> None:
 def render_product_card(product: dict, eager_image: bool = False) -> None:
     title = str(product.get("titolo") or "Prodotto Amazon").strip()
     link = _amazon_url(str(product.get("link_affiliato") or product.get("detail_page_url") or ""))
-    image = _image_url(str(product.get("immagine_url") or ""))
     if not link:
         return
 
@@ -189,7 +218,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     except Exception:
         updated_label = "non disponibile"
 
-    price_html = "<div class='price-row'><span class='price' style='font-size:.90rem!important'>Prezzo aggiornato su Amazon</span></div>"
+    price_html = "<div class='price-row'><span class='price-unavailable'>Prezzo non disponibile nell’app · verifica su Amazon</span></div>"
     if final_price is not None:
         parts = [f"<span class='price'>€{_format_eur(final_price)}</span>"]
         if old_price is not None and old_price > final_price:
@@ -214,26 +243,24 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         optional_meta.append("Popolarità Amazon disponibile")
 
     share = _share_urls(title, link, final_price)
-    if image:
-        loading = "eager" if eager_image else "lazy"
-        priority = "high" if eager_image else "auto"
-        image_html = (
-            f"<a class='product-image-link' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored'>"
-            f"<img class='product-image' src='{html.escape(image, quote=True)}' loading='{loading}' fetchpriority='{priority}' decoding='async' width='198' height='198' alt='{html.escape(title, quote=True)}'></a>"
-        )
-    else:
-        image_html = "<div class='product-placeholder' role='img' aria-label='Immagine non disponibile'>Immagine non disponibile</div>"
+    image_html = _image_markup(product, link, title, eager_image)
 
     meta_html = ""
     if optional_meta:
         meta_html = "<div class='meta'>" + html.escape(" · ".join(optional_meta)) + "</div>"
+
+    trust_text = (
+        f"Aggiornato {updated_label} · il prezzo può cambiare su Amazon."
+        if final_price is not None
+        else f"Dati prodotto aggiornati {updated_label} · controlla prezzo e disponibilità su Amazon."
+    )
 
     card = (
         "<article class='product-card'>"
         "<div class='product-grid'><div>" + image_html + "</div><div>"
         + f"<a class='product-title-link' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored' title='{html.escape(title, quote=True)}'><h3 class='product-title'>{html.escape(title)}</h3></a>"
         + price_html + meta_html
-        + f"<div class='trust'>Aggiornato {html.escape(updated_label)} · il prezzo può cambiare su Amazon.</div>"
+        + f"<div class='trust'>{html.escape(trust_text)}</div>"
         + f"<a class='buy' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored'><span class='amazon-label'>Vedi su <strong>Amazon.it</strong></span></a>"
         + "<details class='share-details'><summary>Condividi</summary><div class='share-row'>"
         + f"<a class='share' href='{html.escape(share['wa'], quote=True)}' target='_blank' rel='noopener noreferrer'>WhatsApp</a>"
