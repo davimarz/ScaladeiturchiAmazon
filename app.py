@@ -26,6 +26,7 @@ st.set_page_config(
 )
 
 LOGGER = logging.getLogger("amazon_affiliate_app")
+amazon_api.LOGGER.setLevel(logging.WARNING)
 MAX_RESULTS = amazon_gateway.MAX_RESULTS
 
 DEFAULTS = {
