@@ -48,8 +48,11 @@ def test_image_markup_contains_fallback_and_placeholder():
     assert "tracker.example.com" not in markup
 
 
-def test_css_keeps_mobile_touch_targets_and_reduced_motion():
+def test_css_keeps_mobile_touch_targets_reduced_motion_and_image_ratio():
     assert "min-height:44px" in ui_components.CSS
     assert "prefers-reduced-motion" in ui_components.CSS
     assert "--brand:" in ui_components.CSS
     assert "-webkit-line-clamp:3" in ui_components.CSS
+    assert "object-fit:contain" in ui_components.CSS
+    assert "object-position:center" in ui_components.CSS
+    assert ".product-image-link{display:flex" in ui_components.CSS
