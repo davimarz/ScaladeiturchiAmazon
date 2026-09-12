@@ -40,3 +40,25 @@ def test_price_display_requires_verified_value():
     assert catalog_service.price_is_displayable({"prezzo_verificato": True, "prezzo_finale": 10.0})
     assert not catalog_service.price_is_displayable({"prezzo_verificato": False, "prezzo_finale": 10.0})
     assert not catalog_service.price_is_displayable({"prezzo_verificato": True, "prezzo_finale": None})
+
+
+def test_showcase_keyword_is_stable_inside_cache_window():
+    first = catalog_service._showcase_keyword(10_000.0)
+    second = catalog_service._showcase_keyword(10_000.0 + catalog_service.SHOWCASE_POOL_TTL - 1)
+    assert first == second
+
+
+def test_showcase_pool_uses_single_fast_fetch(monkeypatch):
+    calls = []
+
+    def fake_fetch(keyword: str, partner_tag: str, item_count: int):
+        calls.append((keyword, partner_tag, item_count))
+        return [_product(i) for i in range(item_count)]
+
+    monkeypatch.setattr(catalog_service.amazon_html, "fetch_search_products_fast", fake_fetch)
+    products = catalog_service._showcase_pool("tag-21")
+
+    assert len(calls) == 1
+    assert calls[0][1] == "tag-21"
+    assert calls[0][2] == catalog_service.SHOWCASE_FETCH_COUNT == 6
+    assert len(products) == 6
