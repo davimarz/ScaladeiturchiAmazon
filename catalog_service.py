@@ -5,11 +5,12 @@ import random
 import time
 from typing import Any, Iterable
 
-import amazon_api
+import amazon_gateway
 import product_dedup
 import shared_results
+import telemetry
 
-HAUL_POOL_TTL = 180
+HAUL_POOL_TTL = 300
 SHOWCASE_POOL_TTL = 300
 HAUL_HISTORY_LIMIT = 50
 SHOWCASE_HISTORY_LIMIT = 24
@@ -50,12 +51,7 @@ def _seed(token: str) -> int:
     return int.from_bytes(digest[:8], "big")
 
 
-def _sample_fresh(
-    pool: Iterable[dict[str, Any]],
-    count: int,
-    token: str,
-    exclude_asins: Iterable[str] = (),
-) -> list[dict[str, Any]]:
+def _sample_fresh(pool: Iterable[dict[str, Any]], count: int, token: str, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
     target = max(1, int(count))
     excluded = {str(value).strip().upper() for value in exclude_asins if str(value).strip()}
     unique_pool = product_dedup.unique(list(pool or []))
@@ -67,37 +63,27 @@ def _sample_fresh(
     selected = fresh[:target]
     if len(selected) < target:
         selected.extend(previous[: target - len(selected)])
+    telemetry.increment("catalog_sample_fresh", len([p for p in selected if _asin(p) not in excluded]))
+    telemetry.increment("catalog_sample_repeated", len([p for p in selected if _asin(p) in excluded]))
     return selected[:target]
 
 
 def _haul_pool(partner_tag: str) -> list[dict[str, Any]]:
-    html_text = amazon_api._fetch_amazon_html(amazon_api.HAUL_STORE_URL)
-    if not html_text:
-        raise amazon_api.api_budget.BudgetUnavailable("Pagina HAUL temporaneamente non leggibile")
-    products = amazon_api._extract_haul_products_from_html(html_text, partner_tag=partner_tag)
+    products = amazon_gateway.fetch_haul_products(partner_tag)
     products = _stamp(products)
     if not products:
-        raise amazon_api.api_budget.BudgetUnavailable("Nessun prodotto HAUL leggibile")
+        raise amazon_gateway.BudgetUnavailable("Nessun prodotto HAUL leggibile")
+    telemetry.observe_value("haul_pool_size", len(products))
     return products
 
 
-def get_haul_selection(
-    item_count: int = 10,
-    refresh_token: str | None = None,
-    exclude_asins: Iterable[str] = (),
-) -> list[dict[str, Any]]:
-    """Cache the HAUL catalogue pool, but sample per session/refresh.
-
-    This intentionally separates data caching from selection caching: the shared
-    cache stores a pool, while the user's refresh token and history determine
-    which products are shown.
-    """
-    tag = amazon_api.get_partner_tag()
+def get_haul_selection(item_count: int = 10, refresh_token: str | None = None, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
+    tag = amazon_gateway.get_partner_tag()
     if not tag:
         return []
     target = max(1, min(int(item_count or 10), 10))
     pool = shared_results.get(
-        ("haul-pool-v2", tag),
+        ("haul-pool-v3", tag),
         HAUL_POOL_TTL,
         lambda: _haul_pool(tag),
         retry=30,
@@ -109,23 +95,19 @@ def get_haul_selection(
 
 
 def _showcase_pool(tag: str, keyword: str) -> list[dict[str, Any]]:
-    products = amazon_api.ottieni_offerte_avanzate(
+    products = amazon_gateway.search_products(
         keyword=keyword,
         sort_type="Quantità vendite",
-        solo_spedizione_gratuita=False,
+        prime_only=False,
         item_count=10,
-        _partner_tag_override=tag,
-        _cache_buster=f"showcase-pool:{keyword}",
+        partner_tag_override=tag,
+        cache_buster=f"showcase-pool:{keyword}",
     )
     return _stamp(products or [])
 
 
-def get_showcase_selection(
-    item_count: int = 3,
-    refresh_token: str | None = None,
-    exclude_asins: Iterable[str] = (),
-) -> list[dict[str, Any]]:
-    tag = amazon_api.get_partner_tag()
+def get_showcase_selection(item_count: int = 3, refresh_token: str | None = None, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
+    tag = amazon_gateway.get_partner_tag()
     if not tag:
         return []
     target = max(1, min(int(item_count or 3), 3))
@@ -136,7 +118,7 @@ def get_showcase_selection(
         keyword = SHOWCASE_KEYWORDS[(start + offset) % len(SHOWCASE_KEYWORDS)]
         try:
             chunk = shared_results.get(
-                ("showcase-pool-v2", tag, keyword),
+                ("showcase-pool-v3", tag, keyword),
                 SHOWCASE_POOL_TTL,
                 lambda keyword=keyword: _showcase_pool(tag, keyword),
                 retry=30,
@@ -147,34 +129,25 @@ def get_showcase_selection(
         combined.extend(chunk or [])
         if len(product_dedup.unique(combined)) >= max(target * 3, target):
             break
-    return _sample_fresh(_stamp(combined), target, token, exclude_asins)
+    telemetry.observe_value("showcase_pool_size", len(product_dedup.unique(combined)))
+    return _sample_fresh(product_dedup.unique(combined), target, token, exclude_asins)
 
 
-def search_products(
-    keyword: str,
-    sort_type: str,
-    prime_only: bool,
-    item_count: int,
-    exclude_asins: Iterable[str] = (),
-) -> list[dict[str, Any]]:
+def search_products(keyword: str, sort_type: str, prime_only: bool, item_count: int, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
     clean = " ".join(str(keyword or "").split())
     if not clean:
         return []
-    products = amazon_api.ottieni_offerte_avanzate(
+    products = amazon_gateway.search_products(
         keyword=clean,
         sort_type=sort_type,
-        solo_spedizione_gratuita=bool(prime_only),
-        item_count=max(1, min(int(item_count), amazon_api.MAX_RESULTS)),
+        prime_only=bool(prime_only),
+        item_count=max(1, min(int(item_count), amazon_gateway.MAX_RESULTS)),
         exclude_asins=tuple(str(value).strip().upper() for value in exclude_asins if str(value).strip()),
     )
     return _stamp(products or [])
 
 
 def price_is_displayable(product: dict[str, Any]) -> bool:
-    """Only display a price when the application marks it as verified.
-
-    The UI still adds an update timestamp and the Amazon price-change disclaimer.
-    """
     return product.get("prezzo_verificato") is True and product.get("prezzo_finale") is not None
 
 

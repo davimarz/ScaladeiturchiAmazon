@@ -1,12 +1,9 @@
-"""Rolling-hour browser allowance with privacy-preserving identifiers.
-
-Uses Redis when REDIS_URL is configured, otherwise falls back to the local
-SQLite store used by api_budget. Redis makes the limiter suitable for multiple
-application instances.
-"""
+"""Rolling-hour browser allowance with privacy-preserving identifiers."""
 from __future__ import annotations
 
 import hashlib
+import hmac
+import logging
 import os
 import time
 
@@ -14,17 +11,25 @@ import api_budget
 
 try:
     import redis
-except ImportError:  # pragma: no cover - optional at runtime
+except ImportError:  # pragma: no cover
     redis = None
 
 _WINDOW_SECONDS = 3600
+LOGGER = logging.getLogger("amazon_affiliate.security")
 
 
 def _visitor_key(visitor: str) -> str:
     clean = str(visitor or "").strip()
     if not clean:
         raise ValueError("visitor id required")
+    secret = os.getenv("VISITOR_HASH_SECRET", "").strip()
+    if secret:
+        return hmac.new(secret.encode("utf-8"), clean.encode("utf-8"), hashlib.sha256).hexdigest()
     return hashlib.sha256(clean.encode("utf-8")).hexdigest()
+
+
+def _strict_redis() -> bool:
+    return os.getenv("STRICT_REDIS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _redis_client():
@@ -52,7 +57,7 @@ def _check_redis(visitor: str, limit: int, consume: bool) -> dict:
         client.expire(key, _WINDOW_SECONDS + 120)
         first = client.zrange(key, 0, 0, withscores=True)
     retry_at = float(first[0][1]) + _WINDOW_SECONDS if count >= limit and first else 0
-    return {"allowed": allowed, "remaining": max(0, limit - count), "retry_at": retry_at}
+    return {"allowed": allowed, "remaining": max(0, limit - count), "retry_at": retry_at, "backend": "redis"}
 
 
 def _check_sqlite(visitor: str, limit: int, consume: bool) -> dict:
@@ -65,9 +70,7 @@ def _check_sqlite(visitor: str, limit: int, consume: bool) -> dict:
         conn.execute("BEGIN IMMEDIATE")
         now = time.time()
         conn.execute("DELETE FROM browser_searches WHERE at <= ?", (now - _WINDOW_SECONDS,))
-        rows = conn.execute(
-            "SELECT at FROM browser_searches WHERE visitor=? ORDER BY at", (visitor_hash,)
-        ).fetchall()
+        rows = conn.execute("SELECT at FROM browser_searches WHERE visitor=? ORDER BY at", (visitor_hash,)).fetchall()
         allowed = len(rows) < limit
         if consume and allowed:
             conn.execute("INSERT INTO browser_searches VALUES (?,?)", (visitor_hash, now))
@@ -77,6 +80,7 @@ def _check_sqlite(visitor: str, limit: int, consume: bool) -> dict:
             "allowed": allowed,
             "remaining": max(0, limit - len(rows)),
             "retry_at": rows[0][0] + _WINDOW_SECONDS if len(rows) >= limit else 0,
+            "backend": "sqlite",
         }
     except Exception:
         conn.rollback()
@@ -90,7 +94,11 @@ def check(visitor: str, limit: int = 10, consume: bool = False) -> dict:
     if os.getenv("REDIS_URL", "").strip():
         try:
             return _check_redis(visitor, limit, consume)
-        except Exception:
-            # Fail closed only if there is no usable local fallback.
+        except Exception as exc:
+            LOGGER.warning("redis rate-limit unavailable error_type=%s", type(exc).__name__)
+            if _strict_redis():
+                raise RuntimeError("rate limit backend unavailable") from exc
             return _check_sqlite(visitor, limit, consume)
+    if _strict_redis():
+        raise RuntimeError("STRICT_REDIS requires REDIS_URL")
     return _check_sqlite(visitor, limit, consume)

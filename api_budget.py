@@ -1,8 +1,7 @@
 """Shared Creators API budget and pacing.
 
-Redis is used when REDIS_URL is configured, which lets multiple application
-instances share the same counters. A local SQLite fallback remains available
-for single-instance deployments and development.
+Redis is used when REDIS_URL is configured. Set STRICT_REDIS=1 for multi-instance
+production so a Redis outage cannot silently fall back to per-instance SQLite.
 """
 from __future__ import annotations
 
@@ -23,6 +22,10 @@ DB_PATH = Path(os.getenv("SCALA_STATE_DB", "").strip() or (Path(__file__).resolv
 
 class BudgetUnavailable(RuntimeError):
     pass
+
+
+def _strict_redis() -> bool:
+    return os.getenv("STRICT_REDIS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _day() -> str:
@@ -72,8 +75,11 @@ def usage(limit: int = 800) -> dict:
     if os.getenv("REDIS_URL", "").strip():
         try:
             return _usage_redis(limit)
-        except Exception:
-            pass
+        except Exception as exc:
+            if _strict_redis():
+                raise BudgetUnavailable("Redis richiesto ma non disponibile") from exc
+    elif _strict_redis():
+        raise BudgetUnavailable("STRICT_REDIS richiede REDIS_URL")
     return _usage_sqlite(limit)
 
 
@@ -121,10 +127,7 @@ def _reserve_sqlite(limit: int, interval: float, max_wait: float) -> None:
                 row = conn.execute("SELECT next_at FROM pacing WHERE id=1").fetchone()
                 wait = max(0.0, (row[0] if row else 0) - time.time())
                 if wait <= 0:
-                    conn.execute(
-                        "INSERT INTO usage(day,calls) VALUES (?,1) ON CONFLICT(day) DO UPDATE SET calls=calls+1",
-                        (day,),
-                    )
+                    conn.execute("INSERT INTO usage(day,calls) VALUES (?,1) ON CONFLICT(day) DO UPDATE SET calls=calls+1", (day,))
                     conn.execute("INSERT OR REPLACE INTO pacing VALUES (1,?)", (time.time() + interval,))
                     conn.commit()
                     return
@@ -151,15 +154,16 @@ def reserve(limit: int = 800, interval: float = 1.1, max_wait: float = 5) -> Non
             return
         except BudgetUnavailable:
             raise
-        except Exception:
-            # Fallback keeps a single-instance deployment usable if Redis is down.
-            pass
+        except Exception as exc:
+            if _strict_redis():
+                raise BudgetUnavailable("Redis richiesto ma non disponibile") from exc
+    elif _strict_redis():
+        raise BudgetUnavailable("STRICT_REDIS richiede REDIS_URL")
     _reserve_sqlite(limit, interval, max_wait)
 
 
 if __name__ == "__main__":
     import argparse
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=800)
     print(json.dumps(usage(parser.parse_args().limit), indent=2))
