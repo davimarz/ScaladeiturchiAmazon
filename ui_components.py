@@ -23,6 +23,7 @@ CSS = """
   --brand:#1f7fb7;--brand-dark:#075985;--brand-soft:#eaf5fb;
   --surface:#ffffff;--page:#f4f8fc;--text:#172033;--muted:#5f6f82;
   --border:#d8e6f4;--success:#047857;--warning:#c2410c;--haul:#f97316;
+  --amazon-ink:#131921;--amazon-ink-hover:#232f3e;--amazon-orange:#ff9900;--amazon-orange-dark:#e47911;
   --r-control:8px;--r-card:10px;--r-shell:12px;
 }
 #MainMenu, header, footer{visibility:hidden!important;height:0!important}
@@ -66,14 +67,16 @@ h3.product-title,.product-title{font-size:.90rem!important;font-weight:700!impor
 .old{font-size:.80rem;color:#64748b;text-decoration:line-through}.discount{font-size:.79rem;font-weight:700;color:var(--warning)}
 .meta{font-size:.75rem!important;color:#526173;line-height:1.35;margin:4px 0}
 .trust{font-size:.73rem!important;line-height:1.35!important;color:#64748b;background:#f8fafc;border:1px solid #eef2f7;border-radius:7px;padding:5px 7px;margin-top:5px}
-.buy{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:8px 12px;background:var(--brand-dark);color:white!important;text-decoration:none!important;border-radius:var(--r-control);font-size:.86rem!important;font-weight:800;width:100%;margin-top:7px}
-.buy:hover{background:#064d72}.buy:focus-visible,.share:focus-visible,.back-top:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
+.buy{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 12px;background:var(--amazon-ink);color:#fff!important;text-decoration:none!important;border:1px solid var(--amazon-ink);border-radius:var(--r-control);font-family:Arial,Helvetica,sans-serif;font-size:.87rem!important;font-weight:700;letter-spacing:.005em;width:100%;margin-top:7px;box-shadow:inset 0 -3px 0 var(--amazon-orange);transition:background .14s ease,border-color .14s ease,transform .14s ease}
+.buy:hover{background:var(--amazon-ink-hover);border-color:var(--amazon-ink-hover);transform:translateY(-1px)}
+.buy .amazon-label{font-weight:700;white-space:nowrap}.buy .amazon-label strong{color:var(--amazon-orange);font-weight:800}
+.buy:focus-visible,.share:focus-visible,.back-top:focus-visible{outline:3px solid var(--amazon-orange);outline-offset:2px}
 .share-details{margin-top:6px}.share-details summary{cursor:pointer;color:var(--brand-dark);font-size:.74rem;font-weight:700;list-style:none}.share-details summary::-webkit-details-marker{display:none}
 .share-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.share{min-height:44px;display:inline-flex;align-items:center;padding:6px 10px;border:1px solid #cbd5e1;border-radius:7px;color:var(--brand-dark)!important;text-decoration:none!important;background:#fff;font-size:.74rem!important}.share:hover{background:#f8fbfe;border-color:#93b8d1}
 .back-top{display:inline-flex;min-height:44px;align-items:center;padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:var(--brand-dark)!important;text-decoration:none!important;font-size:.76rem;font-weight:700;margin:2px 0 8px}
 .site-footer{font-size:.76rem;color:#64748b;background:#fff;border:1px solid #e2e8f0;border-radius:var(--r-card);padding:9px 11px;margin-top:10px;line-height:1.45}
 
-@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.product-card{transition:none}.product-card:hover{transform:none}}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.product-card,.buy{transition:none}.product-card:hover,.buy:hover{transform:none}}
 @media(max-width:640px){
   .block-container{padding:.3rem .4rem 4rem}.brand{padding:9px 11px}.brand h1{font-size:1.42rem!important}.brand p{font-size:.78rem!important}
   div[data-testid="stHorizontalBlock"]{gap:.35rem!important}.stButton>button,.stLinkButton>a{min-height:44px!important;font-size:.80rem!important;padding:.35rem .45rem!important}
@@ -231,7 +234,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         + f"<a class='product-title-link' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored' title='{html.escape(title, quote=True)}'><h3 class='product-title'>{html.escape(title)}</h3></a>"
         + price_html + meta_html
         + f"<div class='trust'>Aggiornato {html.escape(updated_label)} · il prezzo può cambiare su Amazon.</div>"
-        + f"<a class='buy' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored'>Vedi offerta su Amazon</a>"
+        + f"<a class='buy' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored'><span class='amazon-label'>Vedi su <strong>Amazon.it</strong></span></a>"
         + "<details class='share-details'><summary>Condividi</summary><div class='share-row'>"
         + f"<a class='share' href='{html.escape(share['wa'], quote=True)}' target='_blank' rel='noopener noreferrer'>WhatsApp</a>"
         + f"<a class='share' href='{html.escape(share['tg'], quote=True)}' target='_blank' rel='noopener noreferrer'>Telegram</a>"
