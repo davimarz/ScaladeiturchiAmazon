@@ -22,28 +22,76 @@ CSS = """
 #MainMenu, header, footer {visibility:hidden!important;height:0!important}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-.stApp{background:#f8fafc;color:#0f172a;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
-.block-container{max-width:900px;margin:0 auto;padding:.45rem .65rem 5rem}
-.brand{background:#fff;border:1px solid #dbeafe;border-radius:14px;padding:10px 14px;margin-bottom:9px;box-shadow:0 2px 10px rgba(15,23,42,.05)}
-.brand h1{margin:0;font-size:clamp(1.45rem,5vw,2rem);line-height:1.1;color:#075985}
-.brand p{margin:4px 0 0;color:#475569;font-size:.9rem}
-.nav-note{font-size:.83rem;color:#475569;margin:4px 0 10px}
-.promo{background:#fff;border:1px solid #fed7aa;border-left:5px solid #f97316;border-radius:12px;padding:10px 12px;margin:4px 0 10px}
+.stApp{background:#f4f8fc;color:#0f172a;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+.block-container{max-width:880px;margin:0 auto;padding:.35rem .55rem 4.5rem}
+
+/* Header */
+.brand{background:#fff;border:1px solid #d7e5f4;border-radius:12px;padding:11px 14px 10px;margin-bottom:7px;box-shadow:0 2px 8px rgba(15,23,42,.04)}
+.brand h1{margin:0!important;font-size:clamp(1.45rem,4vw,1.8rem)!important;line-height:1.08!important;color:#075985;font-weight:850!important;letter-spacing:-.02em}
+.brand p{margin:5px 0 0!important;color:#526173;font-size:.82rem!important;line-height:1.35!important}
+.nav-note{font-size:.78rem;color:#64748b;margin:3px 0 8px}
+
+/* Navigation and Streamlit controls */
+div[data-testid="stHorizontalBlock"]{gap:.55rem!important}
+button[data-testid="stBaseButton-primary"]{background:#0877b2!important;border:1px solid #0877b2!important;color:#fff!important;box-shadow:none!important;font-weight:750!important}
+button[data-testid="stBaseButton-primary"]:hover{background:#06679b!important;border-color:#06679b!important}
+button[data-testid="stBaseButton-secondary"]{background:#fff!important;border:1px solid #cbd5e1!important;color:#334155!important;box-shadow:none!important;font-weight:650!important}
+button[data-testid="stBaseButton-secondary"]:hover{border-color:#7aaed0!important;background:#f8fbfe!important;color:#075985!important}
+.stButton>button,.stLinkButton>a{min-height:42px!important;border-radius:9px!important;font-size:.86rem!important}
+.stTextInput input{min-height:44px!important;font-size:16px!important;border-radius:9px!important}
+
+/* Intro boxes */
+.promo{background:#fff;border:1px solid #f8c58e;border-left:4px solid #f97316;border-radius:10px;padding:9px 11px;margin:6px 0 8px;font-size:.84rem;line-height:1.45;color:#334155}
 .promo strong{color:#9a3412}
-.product-card{background:#fff;border:1px solid #dbeafe;border-radius:14px;padding:11px;margin:0 0 10px;box-shadow:0 2px 12px rgba(15,23,42,.05)}
-.product-grid{display:grid;grid-template-columns:minmax(150px,240px) minmax(0,1fr);gap:14px;align-items:start}
-.product-image{width:100%;aspect-ratio:1/1;object-fit:contain;background:#fff;border-radius:10px}
-.product-title{font-size:1.04rem;font-weight:800;line-height:1.35;color:#0f172a;margin:0 0 8px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.price-row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:5px 0}
-.price{font-size:1.6rem;font-weight:900;color:#047857}.old{font-size:.92rem;color:#64748b;text-decoration:line-through}.discount{font-weight:800;color:#c2410c}
-.meta{font-size:.82rem;color:#475569;line-height:1.45;margin:5px 0}.trust{font-size:.78rem;color:#475569;background:#f8fafc;border-radius:8px;padding:7px 8px;margin-top:7px}
-.buy{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:10px 15px;background:#0369a1;color:white!important;text-decoration:none!important;border-radius:9px;font-weight:800;width:100%;margin-top:9px}
-.buy:focus-visible,.share:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}.share-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.share{min-height:44px;display:inline-flex;align-items:center;padding:8px 11px;border:1px solid #cbd5e1;border-radius:8px;color:#075985!important;text-decoration:none!important;background:#fff}
-.compliance{font-size:.76rem;color:#475569;background:#f8fafc;border:1px solid #e2e8f0;border-radius:9px;padding:8px 9px;margin:8px 0}
-.site-footer{font-size:.82rem;color:#475569;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:10px 12px;margin-top:12px;line-height:1.5}
-.stButton>button,.stLinkButton>a{min-height:44px!important}.stTextInput input{min-height:46px!important;font-size:16px!important}
-@media(max-width:640px){.block-container{padding:.35rem .45rem 4.5rem}.product-grid{grid-template-columns:38% 62%;gap:9px}.product-card{padding:9px}.product-title{font-size:1rem;-webkit-line-clamp:4}.price{font-size:1.45rem}.meta,.trust{font-size:.82rem}.promo{padding:9px}.brand p{font-size:.84rem}}
-@media(max-width:410px){.product-grid{grid-template-columns:36% 64%}.product-title{font-size:.96rem}}
+.compliance{font-size:.70rem!important;line-height:1.4!important;color:#64748b;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:7px 9px;margin:7px 0 8px}
+
+/* Product cards */
+.product-card{background:#fff;border:1px solid #d8e6f4;border-radius:12px;padding:10px;margin:0 0 9px;box-shadow:0 2px 9px rgba(15,23,42,.045)}
+.product-grid{display:grid;grid-template-columns:minmax(132px,205px) minmax(0,1fr);gap:12px;align-items:start}
+.product-image{display:block;width:100%;aspect-ratio:1/1;object-fit:contain;background:#fff;border-radius:9px}
+h3.product-title,.product-title{font-size:.94rem!important;font-weight:780!important;line-height:1.28!important;color:#172033!important;margin:1px 0 6px!important;padding:0!important;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-height:3.84em}
+.price-row{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;margin:3px 0 4px}
+.price{font-size:1.30rem!important;line-height:1.1!important;font-weight:850!important;color:#047857}
+.old{font-size:.80rem;color:#64748b;text-decoration:line-through}
+.discount{font-size:.79rem;font-weight:750;color:#c2410c}
+.meta{font-size:.75rem!important;color:#526173;line-height:1.35;margin:4px 0}
+.trust{font-size:.68rem!important;line-height:1.35!important;color:#64748b;background:#f8fafc;border:1px solid #eef2f7;border-radius:7px;padding:5px 7px;margin-top:5px}
+.buy{display:inline-flex;align-items:center;justify-content:center;min-height:43px;padding:8px 12px;background:#0877b2;color:white!important;text-decoration:none!important;border-radius:8px;font-size:.86rem!important;font-weight:800;width:100%;margin-top:7px}
+.buy:hover{background:#06679b}
+.buy:focus-visible,.share:focus-visible{outline:3px solid #f59e0b;outline-offset:2px}
+.share-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.share{min-height:36px;display:inline-flex;align-items:center;padding:6px 10px;border:1px solid #cbd5e1;border-radius:7px;color:#075985!important;text-decoration:none!important;background:#fff;font-size:.76rem!important}
+.share:hover{background:#f8fbfe;border-color:#93b8d1}
+
+.site-footer{font-size:.76rem;color:#64748b;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:9px 11px;margin-top:10px;line-height:1.45}
+
+@media(max-width:640px){
+  .block-container{padding:.3rem .4rem 4rem}
+  .brand{padding:9px 11px}
+  .brand h1{font-size:1.45rem!important}
+  .brand p{font-size:.78rem!important}
+  div[data-testid="stHorizontalBlock"]{gap:.35rem!important}
+  .stButton>button,.stLinkButton>a{min-height:40px!important;font-size:.80rem!important;padding:.35rem .45rem!important}
+  .promo{font-size:.79rem;padding:8px 9px}
+  .compliance{font-size:.66rem!important;padding:6px 7px}
+  .product-card{padding:8px;border-radius:10px}
+  .product-grid{grid-template-columns:34% 66%;gap:8px}
+  h3.product-title,.product-title{font-size:.86rem!important;line-height:1.25!important;-webkit-line-clamp:3;max-height:3.75em;margin:0 0 5px!important}
+  .price{font-size:1.17rem!important}
+  .old,.discount{font-size:.72rem!important}
+  .meta{font-size:.69rem!important}
+  .trust{font-size:.62rem!important;padding:4px 6px}
+  .buy{min-height:40px;font-size:.80rem!important;padding:7px 8px}
+  .share-row{gap:5px}
+  .share{min-height:34px;font-size:.70rem!important;padding:5px 8px}
+}
+
+@media(max-width:420px){
+  .product-grid{grid-template-columns:32% 68%;gap:7px}
+  h3.product-title,.product-title{font-size:.82rem!important}
+  .price{font-size:1.10rem!important}
+  .share{padding:5px 7px}
+}
 </style>
 """
 
@@ -137,7 +185,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     except Exception:
         updated_label = "ora non disponibile"
 
-    price_html = "<div class='price-row'><span class='price' style='font-size:1rem'>Prezzo da verificare su Amazon</span></div>"
+    price_html = "<div class='price-row'><span class='price' style='font-size:.88rem!important'>Prezzo da verificare su Amazon</span></div>"
     if final_price is not None:
         parts = [f"<span class='price'>€{_format_eur(final_price)}</span>"]
         if old_price is not None and old_price > final_price:
@@ -162,7 +210,6 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         optional_meta.append("Indicatore di popolarità Amazon disponibile")
 
     share = _share_urls(title, link, final_price)
-    image_html = ""
     if image:
         loading = "eager" if eager_image else "lazy"
         priority = "high" if eager_image else "auto"
@@ -182,7 +229,7 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         "<div class='product-grid'><div>" + image_html + "</div><div>"
         f"<h3 class='product-title'>{html.escape(title)}</h3>"
         + price_html + meta_html
-        + f"<div class='trust'>Aggiornato: {html.escape(updated_label)}. Il prezzo può essere aumentato o modificato dall’ultimo aggiornamento.</div>"
+        + f"<div class='trust'>Aggiornato: {html.escape(updated_label)}. Il prezzo può cambiare su Amazon.</div>"
         + f"<a class='buy' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored'>Vedi offerta su Amazon</a>"
         + "<div class='share-row'>"
         + f"<a class='share' href='{html.escape(share['wa'], quote=True)}' target='_blank' rel='noopener noreferrer'>WhatsApp</a>"
