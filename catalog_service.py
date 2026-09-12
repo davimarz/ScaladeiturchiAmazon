@@ -170,9 +170,6 @@ def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: 
     target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
     token = str(refresh_token or time.time_ns())
 
-    # The pool is loaded from direct Amazon showcase pages, never from search
-    # engines. Clicking Vetrina only resamples this pool; it does not trigger a
-    # new network request while the shared cache is fresh.
     pool = shared_results.get(
         ("showcase-pool-v6", tag),
         SHOWCASE_POOL_TTL,
@@ -181,7 +178,20 @@ def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: 
         stale_for=SHOWCASE_STALE_FOR,
         report_failure=True,
     )
-    return _sample_fresh(pool, target, token, exclude_asins)
+
+    selected = _sample_fresh(pool, target, token, exclude_asins)
+    if not selected:
+        return []
+
+    started = time.perf_counter()
+    enriched = amazon_gateway.enrich_product_details(selected)
+    enriched = _stamp(enriched)
+    telemetry.observe("showcase_detail_enrich_seconds", time.perf_counter() - started)
+    telemetry.observe_value(
+        "showcase_detail_prices_visible",
+        sum(1 for product in enriched if price_is_displayable(product)),
+    )
+    return enriched[:target]
 
 
 def search_products(keyword: str, sort_type: str, prime_only: bool, item_count: int, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
