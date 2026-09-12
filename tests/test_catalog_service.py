@@ -85,6 +85,55 @@ def test_untrusted_unverified_price_stays_hidden():
     assert prepared["_price_display_source"] == ""
 
 
+def test_search_recovery_is_bounded_and_merges_image_and_verified_price(monkeypatch):
+    products = []
+    for index in range(7):
+        item = _product(index)
+        item["prezzo_verificato"] = False
+        item["prezzo_finale"] = None
+        item["immagine_url"] = ""
+        products.append(item)
+
+    calls = []
+
+    def fake_enrich(items):
+        batch = [dict(item) for item in items]
+        calls.append(batch)
+        recovered = []
+        for index, item in enumerate(batch):
+            item["immagine_url"] = f"https://m.media-amazon.com/images/I/recovered-{index}.jpg"
+            item["prezzo_verificato"] = True
+            item["prezzo_finale"] = 20.0 + index
+            recovered.append(item)
+        return recovered
+
+    monkeypatch.setattr(catalog_service.amazon_gateway, "enrich_product_details", fake_enrich)
+    recovered = catalog_service._recover_search_details(products)
+
+    assert len(calls) == 1
+    assert len(calls[0]) == catalog_service.SEARCH_DETAIL_RECOVERY_LIMIT == 4
+    assert recovered[0]["immagine_url"].startswith("https://m.media-amazon.com/")
+    assert recovered[0]["prezzo_verificato"] is True
+    assert recovered[0]["prezzo_finale"] == 20.0
+    assert recovered[4]["immagine_url"] == ""
+
+
+def test_search_recovery_skips_complete_cards(monkeypatch):
+    item = _product(1)
+    item.update({
+        "immagine_url": "https://m.media-amazon.com/images/I/ok.jpg",
+        "prezzo_verificato": True,
+        "prezzo_finale": 29.9,
+    })
+
+    def should_not_run(_items):
+        raise AssertionError("complete cards must not be enriched again")
+
+    monkeypatch.setattr(catalog_service.amazon_gateway, "enrich_product_details", should_not_run)
+    recovered = catalog_service._recover_search_details([item])
+    assert recovered[0]["prezzo_finale"] == 29.9
+
+
 def test_showcase_page_is_stable_inside_cache_window():
     bucket_start = catalog_service.SHOWCASE_POOL_TTL * 5
     first = catalog_service._showcase_page_index(bucket_start)
