@@ -365,9 +365,20 @@ elif active_tab == "cerca":
         pages = max(1, math.ceil(total / app_constants.SEARCH_PAGE_SIZE))
         current_page = min(max(1, int(st.session_state.get("current_page", 1))), pages)
         if pages > 1:
-            page = st.selectbox("Pagina", list(range(1, pages + 1)), index=current_page - 1, format_func=lambda value: f"Pagina {value}")
-            st.session_state["current_page"] = int(page)
-            current_page = int(page)
+            for row_start in range(1, pages + 1, 6):
+                row_end = min(row_start + 6, pages + 1)
+                page_numbers = list(range(row_start, row_end))
+                page_columns = st.columns(len(page_numbers), gap="small")
+                for column, page_number in zip(page_columns, page_numbers):
+                    with column:
+                        if st.button(
+                            f"Pagina {page_number}",
+                            key=f"search_page_{page_number}",
+                            type="primary" if page_number == current_page else "secondary",
+                            use_container_width=True,
+                        ):
+                            st.session_state["current_page"] = page_number
+                            current_page = page_number
         start = (current_page - 1) * app_constants.SEARCH_PAGE_SIZE
         end = min(start + app_constants.SEARCH_PAGE_SIZE, total)
         st.caption(f"Prodotti {start + 1}-{end} di {total}")
