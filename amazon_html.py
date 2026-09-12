@@ -63,6 +63,76 @@ def _text(node, selectors: tuple[str, ...]) -> str:
     return ""
 
 
+def _price_from_element(element) -> float | None:
+    """Read an Amazon price from visible text, a11y text or split price spans."""
+    if element is None:
+        return None
+
+    candidates = [
+        element.get_text(" ", strip=True),
+        element.get("aria-label"),
+        element.get("title"),
+        element.get("data-a-price"),
+    ]
+    for candidate in candidates:
+        value = _price(candidate)
+        if value is not None:
+            return value
+
+    whole = element.select_one(".a-price-whole")
+    fraction = element.select_one(".a-price-fraction")
+    if whole:
+        whole_digits = re.sub(r"\D", "", whole.get_text("", strip=True))
+        fraction_digits = re.sub(r"\D", "", fraction.get_text("", strip=True) if fraction else "00")
+        if whole_digits:
+            try:
+                return float(f"{whole_digits}.{(fraction_digits or '00')[:2].ljust(2, '0')}")
+            except ValueError:
+                return None
+    return None
+
+
+def _first_price(node, selectors: tuple[str, ...]) -> float | None:
+    for selector in selectors:
+        for found in node.select(selector):
+            value = _price_from_element(found)
+            if value is not None and value > 0:
+                return value
+    return None
+
+
+def _extract_card_prices(node) -> tuple[float | None, float | None]:
+    """Extract current/list price across Amazon deals and ranking card layouts."""
+    current_price = _first_price(node, (
+        ".a-price:not(.a-text-price):not([data-a-strike='true'])",
+        "[data-a-color='price'] .a-price",
+        "[data-a-color='price']",
+        ".a-price.aok-align-center",
+        ".a-price",
+    ))
+
+    old_price = _first_price(node, (
+        ".a-text-price",
+        ".a-price[data-a-strike='true']",
+        "[data-a-strike='true']",
+        "[data-a-color='secondary'] .a-price",
+    ))
+
+    # Some deal cards expose the list price only in accessibility text.
+    if old_price is None:
+        for found in node.select("[aria-label], [title]"):
+            text = f"{found.get('aria-label') or ''} {found.get('title') or ''}".lower()
+            if any(marker in text for marker in ("prezzo consigliato", "prezzo precedente", "list price", "was:")):
+                candidate = _price_from_element(found)
+                if candidate is not None:
+                    old_price = candidate
+                    break
+
+    if old_price is not None and current_price is not None and old_price <= current_price:
+        old_price = None
+    return current_price, old_price
+
+
 def _extract_storefront_cards(html_text: str, partner_tag: str) -> list[dict]:
     """Parse product cards from Amazon deals/bestseller/storefront pages.
 
@@ -105,17 +175,7 @@ def _extract_storefront_cards(html_text: str, partner_tag: str) -> list[dict]:
         if len(title) < 4:
             continue
 
-        current_node = node.select_one(".a-price:not(.a-text-price) .a-offscreen")
-        if current_node is None:
-            current_node = node.select_one(".a-price .a-offscreen")
-        old_node = (
-            node.select_one(".a-text-price .a-offscreen")
-            or node.select_one(".a-price[data-a-strike='true'] .a-offscreen")
-        )
-        final_price = _price(current_node.get_text(" ", strip=True) if current_node else None)
-        old_price = _price(old_node.get_text(" ", strip=True) if old_node else None)
-        if old_price is not None and final_price is not None and old_price <= final_price:
-            old_price = None
+        final_price, old_price = _extract_card_prices(node)
 
         discount = ""
         if old_price is not None and final_price is not None:
@@ -171,23 +231,33 @@ def fetch_showcase_products_fast(page_index: int, partner_tag: str, item_count: 
         products.extend(_extract_storefront_cards(html_text, tag))
         if len(products) < target:
             try:
-                products.extend(amazon_api._extract_products_from_html(
+                generic_products = amazon_api._extract_products_from_html(
                     html_text,
                     partner_tag=tag,
                     min_price=None,
                     max_price=None,
                     require_prime=False,
-                ))
+                )
+                for product in generic_products:
+                    copy = dict(product)
+                    # Preserve trusted generic card prices when that parser found
+                    # an explicit Amazon base-price node.
+                    if copy.get("prezzo_finale") is not None and not copy.get("_serp_price_confidence"):
+                        copy["_serp_price_confidence"] = "base_price_node"
+                    products.append(copy)
             except Exception:
                 pass
+    unique_products = product_dedup.unique(products)
+    priced_count = sum(1 for product in unique_products if product.get("prezzo_finale") is not None)
     amazon_api.LOGGER.info(
-        "Vetrina direct Amazon source=%s products=%s target=%s",
+        "Vetrina direct Amazon source=%s products=%s priced=%s target=%s",
         source_name,
-        len(product_dedup.unique(products)),
+        len(unique_products),
+        priced_count,
         target,
     )
 
-    if len(product_dedup.unique(products)) < 4:
+    if len(unique_products) < 4:
         haul_html = amazon_api._fetch_amazon_html(
             amazon_api.HAUL_STORE_URL,
             timeout=SHOWCASE_FAST_TIMEOUT,
@@ -202,9 +272,11 @@ def fetch_showcase_products_fast(page_index: int, partner_tag: str, item_count: 
                     products.append(copy)
             except Exception:
                 pass
+        unique_products = product_dedup.unique(products)
         amazon_api.LOGGER.info(
-            "Vetrina Amazon fallback=haul products_total=%s",
-            len(product_dedup.unique(products)),
+            "Vetrina Amazon fallback=haul products_total=%s priced=%s",
+            len(unique_products),
+            sum(1 for product in unique_products if product.get("prezzo_finale") is not None),
         )
 
     result = product_dedup.unique(products)
