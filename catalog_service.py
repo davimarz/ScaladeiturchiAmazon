@@ -6,12 +6,15 @@ import time
 from typing import Any, Iterable
 
 import amazon_gateway
+import amazon_html
 import product_dedup
 import shared_results
 import telemetry
 
 HAUL_POOL_TTL = 300
-SHOWCASE_POOL_TTL = 300
+SHOWCASE_POOL_TTL = 30 * 60
+SHOWCASE_STALE_FOR = 24 * 60 * 60
+SHOWCASE_FETCH_COUNT = 6
 HAUL_HISTORY_LIMIT = 50
 SHOWCASE_HISTORY_LIMIT = 24
 DISPLAY_BATCH_SIZE = 4
@@ -95,43 +98,54 @@ def get_haul_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: str 
     return _sample_fresh(pool, target, token, exclude_asins)
 
 
-def _showcase_pool(tag: str, keyword: str) -> list[dict[str, Any]]:
-    products = amazon_gateway.search_products(
-        keyword=keyword,
-        sort_type="Quantità vendite",
-        prime_only=False,
-        item_count=10,
-        partner_tag_override=tag,
-        cache_buster=f"showcase-pool:{keyword}",
-    )
-    return _stamp(products or [])
+def _showcase_keyword(now: float | None = None) -> str:
+    """Rotate the showcase category only when its shared cache expires."""
+    current = float(now if now is not None else time.time())
+    bucket = int(current // SHOWCASE_POOL_TTL)
+    return SHOWCASE_KEYWORDS[bucket % len(SHOWCASE_KEYWORDS)]
+
+
+def _showcase_pool(tag: str) -> list[dict[str, Any]]:
+    keyword = _showcase_keyword()
+    started = time.perf_counter()
+    try:
+        products = amazon_html.fetch_search_products_fast(
+            keyword=keyword,
+            partner_tag=tag,
+            item_count=SHOWCASE_FETCH_COUNT,
+        )
+    except Exception:
+        telemetry.increment("showcase_fast_fetch_error")
+        raise
+
+    products = _stamp(products or [])
+    telemetry.observe("showcase_fast_fetch_seconds", time.perf_counter() - started)
+    telemetry.observe_value("showcase_pool_size", len(products))
+    if not products:
+        raise amazon_gateway.BudgetUnavailable("Nessun prodotto recuperabile per la Vetrina")
+    return products
 
 
 def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: str | None = None, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
     tag = amazon_gateway.get_partner_tag()
     if not tag:
         return []
+
     target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
     token = str(refresh_token or time.time_ns())
-    start = _seed(token) % len(SHOWCASE_KEYWORDS)
-    combined: list[dict[str, Any]] = []
-    for offset in range(min(5, len(SHOWCASE_KEYWORDS))):
-        keyword = SHOWCASE_KEYWORDS[(start + offset) % len(SHOWCASE_KEYWORDS)]
-        try:
-            chunk = shared_results.get(
-                ("showcase-pool-v3", tag, keyword),
-                SHOWCASE_POOL_TTL,
-                lambda keyword=keyword: _showcase_pool(tag, keyword),
-                retry=30,
-                stale_for=900,
-            )
-        except Exception:
-            chunk = []
-        combined.extend(chunk or [])
-        if len(product_dedup.unique(combined)) >= max(target * 3, target):
-            break
-    telemetry.observe_value("showcase_pool_size", len(product_dedup.unique(combined)))
-    return _sample_fresh(product_dedup.unique(combined), target, token, exclude_asins)
+
+    # One shared Amazon-only pool for the whole app. A click merely resamples it;
+    # it does not launch another Amazon search. If refresh fails, stale cached
+    # data can continue to serve the showcase for up to one day.
+    pool = shared_results.get(
+        ("showcase-pool-v4", tag),
+        SHOWCASE_POOL_TTL,
+        lambda: _showcase_pool(tag),
+        retry=60,
+        stale_for=SHOWCASE_STALE_FOR,
+        report_failure=True,
+    )
+    return _sample_fresh(pool, target, token, exclude_asins)
 
 
 def search_products(keyword: str, sort_type: str, prime_only: bool, item_count: int, exclude_asins: Iterable[str] = ()) -> list[dict[str, Any]]:
