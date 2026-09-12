@@ -19,6 +19,7 @@ SHOWCASE_FETCH_COUNT = 12
 HAUL_HISTORY_LIMIT = 50
 SHOWCASE_HISTORY_LIMIT = 24
 DISPLAY_BATCH_SIZE = 4
+SEARCH_DETAIL_RECOVERY_LIMIT = 4
 
 
 def _asin(product: dict[str, Any]) -> str:
@@ -84,6 +85,78 @@ def _stamp(products: Iterable[dict[str, Any]], fetched_at: float | None = None) 
         copy.setdefault("_source_label", str(copy.get("source") or "Amazon"))
         result.append(copy)
     return result
+
+
+def _has_image(product: dict[str, Any]) -> bool:
+    if str(product.get("immagine_url") or "").strip():
+        return True
+    fallbacks = product.get("immagine_fallback_urls") or []
+    if isinstance(fallbacks, str):
+        fallbacks = [fallbacks]
+    return any(str(value or "").strip() for value in fallbacks)
+
+
+def _recover_search_details(products: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Retry only the first incomplete search cards, once and in parallel.
+
+    The core search already tries its normal sources. This small recovery pass is
+    intentionally capped so a blocked Amazon detail endpoint cannot turn one
+    search into dozens of additional requests.
+    """
+    items = [dict(product) for product in products or []]
+    indexes = [
+        index for index, product in enumerate(items)
+        if not _has_image(product) or not price_is_displayable(_prepare_price_display(product))
+    ][:SEARCH_DETAIL_RECOVERY_LIMIT]
+    if not indexes:
+        return items
+
+    candidates = [
+        {key: value for key, value in items[index].items() if key != "variants"}
+        for index in indexes
+    ]
+    started = time.perf_counter()
+    try:
+        recovered = list(amazon_gateway.enrich_product_details(candidates) or [])
+    except Exception:
+        telemetry.increment("search_detail_recovery_error")
+        return items
+
+    for index, richer in zip(indexes, recovered):
+        original = items[index]
+        richer = dict(richer or {})
+        merged = dict(original)
+
+        recovered_image = str(richer.get("immagine_url") or "").strip()
+        if recovered_image:
+            previous_image = str(original.get("immagine_url") or "").strip()
+            merged["immagine_url"] = recovered_image
+            fallback_values = []
+            if previous_image and previous_image != recovered_image:
+                fallback_values.append(previous_image)
+            for value in original.get("immagine_fallback_urls") or []:
+                clean = str(value or "").strip()
+                if clean and clean != recovered_image and clean not in fallback_values:
+                    fallback_values.append(clean)
+            for value in richer.get("immagine_fallback_urls") or []:
+                clean = str(value or "").strip()
+                if clean and clean != recovered_image and clean not in fallback_values:
+                    fallback_values.append(clean)
+            merged["immagine_fallback_urls"] = fallback_values
+
+        if richer.get("prezzo_verificato") is True and _positive_float(richer.get("prezzo_finale")) is not None:
+            for field in ("prezzo_finale", "prezzo_iniziale", "prezzo_verificato", "sconto", "sconto_val", "source"):
+                if field in richer:
+                    merged[field] = richer[field]
+
+        for field in ("titolo", "size", "color", "sold_qty_month", "sold_qty_label", "sales_rank"):
+            if richer.get(field) not in (None, ""):
+                merged[field] = richer[field]
+        items[index] = merged
+
+    telemetry.observe("search_detail_recovery_seconds", time.perf_counter() - started)
+    telemetry.observe_value("search_detail_recovery_count", len(indexes))
+    return items
 
 
 def _seed(token: str) -> int:
@@ -183,10 +256,6 @@ def get_showcase_selection(item_count: int = DISPLAY_BATCH_SIZE, refresh_token: 
     if not selected:
         return []
 
-    # `product_dedup.unique()` attaches a presentation-only `variants` list.
-    # Detail enrichment must work on the selected card itself; otherwise a
-    # later dedup/flatten can restore the old variant and discard verified
-    # price fields from the detail page.
     selected_for_detail = [
         {key: value for key, value in dict(product).items() if key != "variants"}
         for product in selected
@@ -214,7 +283,9 @@ def search_products(keyword: str, sort_type: str, prime_only: bool, item_count: 
         item_count=max(1, min(int(item_count), amazon_gateway.MAX_RESULTS)),
         exclude_asins=tuple(str(value).strip().upper() for value in exclude_asins if str(value).strip()),
     )
-    return _stamp(products or [])
+    products = _stamp(products or [])
+    products = _recover_search_details(products)
+    return _stamp(products)
 
 
 def price_is_displayable(product: dict[str, Any]) -> bool:
