@@ -40,13 +40,18 @@ def _redis_enabled() -> bool:
 def _redis_client():
     if not _redis_enabled():
         return None
-    return redis.Redis.from_url(os.getenv("REDIS_URL", ""), decode_responses=True, socket_timeout=2, socket_connect_timeout=2)
+    return redis.Redis.from_url(
+        os.getenv("REDIS_URL", ""),
+        decode_responses=True,
+        socket_timeout=2,
+        socket_connect_timeout=2,
+    )
 
 
-def _redis_key(key) -> str:
+def _redis_key(key, suffix: str = "fresh") -> str:
     import hashlib
     digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
-    return f"scala:cache:{digest}"
+    return f"scala:cache:{digest}:{suffix}"
 
 
 def retry_at(key):
@@ -54,16 +59,22 @@ def retry_at(key):
         return _entries.get(key, {}).get("retry_at", 0)
 
 
-def _redis_read(key):
+def _redis_read(key, *, allow_stale: bool = False):
     client = _redis_client()
     if client is None:
         return None
+    suffix = "stale" if allow_stale else "fresh"
     try:
-        raw = client.get(_redis_key(key))
+        raw = client.get(_redis_key(key, suffix))
         if not raw:
             return None
         payload = json.loads(raw)
-        if time.time() < float(payload.get("expires", 0)):
+        now = time.time()
+        if allow_stale:
+            if now <= float(payload.get("stale_until", 0)):
+                telemetry.increment("cache_hit_redis_stale")
+                return payload.get("data")
+        elif now < float(payload.get("expires", 0)):
             telemetry.increment("cache_hit_redis")
             return payload.get("data")
     except Exception:
@@ -71,18 +82,40 @@ def _redis_read(key):
     return None
 
 
-def _redis_write(key, data, ttl: int):
+def _redis_write(key, data, ttl: int, stale_for: int):
     client = _redis_client()
     if client is None:
         return
     try:
-        payload = {"expires": time.time() + ttl, "data": data}
-        client.setex(_redis_key(key), max(1, int(ttl)), json.dumps(payload, separators=(",", ":"), default=str))
+        now = time.time()
+        ttl = max(1, int(ttl))
+        stale_for = max(0, int(stale_for))
+        fresh_payload = {"expires": now + ttl, "data": data}
+        client.setex(
+            _redis_key(key, "fresh"),
+            ttl,
+            json.dumps(fresh_payload, separators=(",", ":"), default=str),
+        )
+        if stale_for > 0:
+            stale_payload = {"stale_until": now + ttl + stale_for, "data": data}
+            client.setex(
+                _redis_key(key, "stale"),
+                ttl + stale_for,
+                json.dumps(stale_payload, separators=(",", ":"), default=str),
+            )
     except Exception:
         telemetry.increment("cache_redis_error")
 
 
-def get(key, ttl, loader, retry=30, stale_for=900, report_failure=False):
+def get(
+    key,
+    ttl,
+    loader,
+    retry=30,
+    stale_for=900,
+    report_failure=False,
+    scrub_stale_prices=True,
+):
     redis_data = _redis_read(key)
     if redis_data is not None:
         return redis_data
@@ -93,20 +126,34 @@ def get(key, ttl, loader, retry=30, stale_for=900, report_failure=False):
             remaining = wait_until - time.monotonic()
             if remaining <= 0:
                 entry = _entries.get(key)
+                stale = _stale(entry, time.time(), stale_for, scrub_stale_prices) if entry else []
+                if stale:
+                    return stale
+                redis_stale = _redis_read(key, allow_stale=True)
+                if redis_stale is not None:
+                    return _sanitize_stale(redis_stale, scrub_stale_prices)
                 if report_failure:
                     raise RetryPending(time.time() + 1)
-                return _stale(entry, time.time(), stale_for) if entry else []
+                return []
             _changed.wait(timeout=min(0.5, remaining))
+
         now = time.time()
         entry = _entries.get(key)
         if entry and now < entry["expires"]:
             telemetry.increment("cache_hit_memory")
             return copy.deepcopy(entry["data"])
         telemetry.increment("cache_miss")
+
         if entry and now < entry.get("retry_at", 0):
+            stale = _stale(entry, now, stale_for, scrub_stale_prices)
+            if stale:
+                return stale
+            redis_stale = _redis_read(key, allow_stale=True)
+            if redis_stale is not None:
+                return _sanitize_stale(redis_stale, scrub_stale_prices)
             if report_failure:
                 raise RetryPending(entry["retry_at"])
-            return _stale(entry, now, stale_for)
+            return []
         _running.add(key)
 
     try:
@@ -124,13 +171,21 @@ def get(key, ttl, loader, retry=30, stale_for=900, report_failure=False):
         with _changed:
             entry = _entries.setdefault(key, {"data": [], "expires": 0})
             entry["retry_at"] = time.time() + retry
-            result = _stale(entry, time.time(), stale_for)
+            result = _stale(entry, time.time(), stale_for, scrub_stale_prices)
             _running.discard(key)
             _trim()
             _changed.notify_all()
+
+        if result:
+            return result
+
+        redis_stale = _redis_read(key, allow_stale=True)
+        if redis_stale is not None:
+            return _sanitize_stale(redis_stale, scrub_stale_prices)
+
         if report_failure:
             raise RetryPending(entry["retry_at"]) from exc
-        return result
+        return []
 
     with _changed:
         _entries[key] = {"data": copy.deepcopy(data), "expires": time.time() + ttl}
@@ -138,7 +193,7 @@ def get(key, ttl, loader, retry=30, stale_for=900, report_failure=False):
         _running.discard(key)
         _trim()
         _changed.notify_all()
-    _redis_write(key, data, ttl)
+    _redis_write(key, data, ttl, stale_for)
     return data
 
 
@@ -147,12 +202,31 @@ def _trim():
         _entries.popitem(last=False)
 
 
-def _stale(entry, now, stale_for):
+def _sanitize_stale(data, scrub_stale_prices: bool):
+    result = copy.deepcopy(data)
+    if not scrub_stale_prices:
+        return result
+    if not isinstance(result, list):
+        return result
+    for product in result:
+        if not isinstance(product, dict):
+            continue
+        variants = product.get("variants", [])
+        if not isinstance(variants, list):
+            variants = []
+        for offer in [product] + [item for item in variants if isinstance(item, dict)]:
+            offer.update(
+                prezzo_finale=None,
+                prezzo_iniziale=None,
+                prezzo_verificato=False,
+                sconto="",
+                sconto_val=0,
+            )
+    return result
+
+
+def _stale(entry, now, stale_for, scrub_stale_prices=True):
     if not entry or now > entry["expires"] + stale_for:
         return []
-    data = copy.deepcopy(entry["data"])
-    for product in data:
-        for offer in [product] + list(product.get("variants", [])):
-            offer.update(prezzo_finale=None, prezzo_iniziale=None, prezzo_verificato=False, sconto="", sconto_val=0)
     telemetry.increment("cache_stale_served")
-    return data
+    return _sanitize_stale(entry["data"], scrub_stale_prices)

@@ -54,8 +54,7 @@ button[data-testid="stBaseButton-secondary"]:hover{border-color:#7aaed0!importan
 .product-card:hover{transform:translateY(-1px);box-shadow:0 5px 16px rgba(15,23,42,.07);border-color:#bdd8ea}
 .product-grid{display:grid;grid-template-columns:minmax(132px,198px) minmax(0,1fr);gap:12px;align-items:start}
 .product-image-link{display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:1/1;border-radius:9px;background:#fff;overflow:hidden}
-.product-image,.product-image-object{display:block;max-width:100%;max-height:100%;width:auto;height:auto;background:#fff;border-radius:9px}
-.product-image{object-fit:contain;object-position:center}.product-image-object{width:100%;height:100%;object-fit:contain;object-position:center;pointer-events:none;border:0;overflow:hidden}
+.product-image{display:block;max-width:100%;max-height:100%;width:100%;height:100%;background:#fff;border-radius:9px;object-fit:contain;object-position:center}
 .product-placeholder{display:flex;align-items:center;justify-content:center;width:100%;aspect-ratio:1/1;border-radius:9px;background:#f8fafc;border:1px dashed #cbd5e1;color:#64748b;font-size:.72rem;text-align:center;padding:10px}
 .product-title-link{text-decoration:none!important;color:inherit!important}
 h3.product-title,.product-title{font-size:.90rem!important;font-weight:700!important;line-height:1.27!important;color:var(--text)!important;margin:1px 0 5px!important;padding:0!important;letter-spacing:-.01em;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-height:3.81em}
@@ -141,15 +140,15 @@ def _image_markup(product: dict, link: str, title: str, eager_image: bool) -> st
     if not candidates:
         return "<div class='product-placeholder' role='img' aria-label='Immagine non disponibile'>Immagine non disponibile</div>"
 
-    fallback = "<div class='product-placeholder' role='img' aria-label='Immagine non disponibile'>Immagine non disponibile</div>"
-    for url in reversed(candidates):
-        fallback = (
-            f"<object class='product-image-object' data='{html.escape(url, quote=True)}' type='image/jpeg' "
-            f"aria-label='{html.escape(title, quote=True)}'>{fallback}</object>"
-        )
+    image = candidates[0]
+    loading = "eager" if eager_image else "lazy"
+    priority = "high" if eager_image else "auto"
     return (
         f"<a class='product-image-link' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored' "
-        f"aria-label='Apri {html.escape(title, quote=True)} su Amazon'>{fallback}</a>"
+        f"aria-label='Apri {html.escape(title, quote=True)} su Amazon'>"
+        f"<img class='product-image' src='{html.escape(image, quote=True)}' alt='{html.escape(title, quote=True)}' "
+        f"loading='{loading}' fetchpriority='{priority}' decoding='async' width='198' height='198'>"
+        "</a>"
     )
 
 
@@ -189,6 +188,14 @@ def render_price_notice() -> None:
     )
 
 
+def _format_timestamp(value: object) -> str:
+    try:
+        dt = datetime.fromtimestamp(float(value), tz=ROME)
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return ""
+
+
 def render_product_card(product: dict, eager_image: bool = False) -> None:
     title = str(product.get("titolo") or "Prodotto Amazon").strip()
     link = _amazon_url(str(product.get("link_affiliato") or product.get("detail_page_url") or ""))
@@ -211,12 +218,8 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
         except (TypeError, ValueError):
             pass
 
-    fetched_at = product.get("_fetched_at")
-    try:
-        dt = datetime.fromtimestamp(float(fetched_at), tz=ROME)
-        updated_label = dt.strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        updated_label = "non disponibile"
+    fetched_label = _format_timestamp(product.get("_fetched_at"))
+    price_label = _format_timestamp(product.get("price_verified_at"))
 
     price_html = "<div class='price-row'><span class='price-unavailable'>Prezzo non disponibile nell’app · verifica su Amazon</span></div>"
     if final_price is not None:
@@ -249,11 +252,18 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     if optional_meta:
         meta_html = "<div class='meta'>" + html.escape(" · ".join(optional_meta)) + "</div>"
 
-    trust_text = (
-        f"Aggiornato {updated_label} · il prezzo può cambiare su Amazon."
-        if final_price is not None
-        else f"Dati prodotto aggiornati {updated_label} · controlla prezzo e disponibilità su Amazon."
-    )
+    if final_price is not None:
+        trust_text = (
+            f"Prezzo verificato {price_label} · può cambiare su Amazon."
+            if price_label
+            else "Prezzo verificato su Amazon · può cambiare."
+        )
+    else:
+        trust_text = (
+            f"Dati prodotto recuperati {fetched_label} · controlla prezzo e disponibilità su Amazon."
+            if fetched_label
+            else "Controlla prezzo e disponibilità su Amazon."
+        )
 
     card = (
         "<article class='product-card'>"

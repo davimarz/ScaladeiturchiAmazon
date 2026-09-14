@@ -32,20 +32,25 @@ def test_image_candidates_preserve_valid_fallback_order_without_duplicates():
     ]
 
 
-def test_image_markup_contains_fallback_and_placeholder():
-    product = {
-        "immagine_url": "https://m.media-amazon.com/images/I/main.jpg",
-        "immagine_fallback_urls": ["https://images-na.ssl-images-amazon.com/images/P/B000000001.jpg"],
-    }
-    markup = ui_components._image_markup(
+def test_image_markup_uses_lazy_loading_after_first_card():
+    product = {"immagine_url": "https://m.media-amazon.com/images/I/main.jpg"}
+    lazy = ui_components._image_markup(
         product,
         "https://www.amazon.it/dp/B000000001",
         "Prodotto prova",
         False,
     )
-    assert markup.count("product-image-object") == 2
-    assert "Immagine non disponibile" in markup
-    assert "tracker.example.com" not in markup
+    eager = ui_components._image_markup(
+        product,
+        "https://www.amazon.it/dp/B000000001",
+        "Prodotto prova",
+        True,
+    )
+    assert "loading='lazy'" in lazy
+    assert "fetchpriority='auto'" in lazy
+    assert "loading='eager'" in eager
+    assert "fetchpriority='high'" in eager
+    assert "width='198'" in eager and "height='198'" in eager
 
 
 def test_css_keeps_mobile_touch_targets_reduced_motion_and_image_ratio():

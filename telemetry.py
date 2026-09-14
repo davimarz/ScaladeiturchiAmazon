@@ -20,6 +20,11 @@ def increment(name: str, amount: int = 1) -> None:
         _COUNTERS[str(name)] += int(amount)
 
 
+def counter_value(name: str) -> int:
+    with _LOCK:
+        return int(_COUNTERS.get(str(name), 0))
+
+
 def _append(bucket: dict[str, list[float]], name: str, value: float) -> None:
     samples = bucket[str(name)]
     samples.append(float(value))
@@ -61,9 +66,21 @@ def _summary(values: list[float], milliseconds: bool = False) -> dict:
 
 def snapshot() -> dict:
     with _LOCK:
-        timings = {name: _summary(values, milliseconds=True) for name, values in _TIMINGS.items() if values}
-        values = {name: _summary(samples) for name, samples in _VALUES.items() if samples}
-        return {"counters": dict(_COUNTERS), "timings_ms": timings, "values": values}
+        timings = {
+            name: _summary(values, milliseconds=True)
+            for name, values in _TIMINGS.items()
+            if values
+        }
+        values = {
+            name: _summary(samples)
+            for name, samples in _VALUES.items()
+            if samples
+        }
+        return {
+            "counters": dict(_COUNTERS),
+            "timings_ms": timings,
+            "values": values,
+        }
 
 
 def log_snapshot() -> None:
