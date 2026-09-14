@@ -7,12 +7,12 @@ import time
 from typing import Any, Iterable
 
 import amazon_gateway
-import amazon_html
 import app_constants
 import product_dedup
 import shared_results
+import showcase_parser
 import telemetry
-from product_models import Product
+from product_models import PriceSource, Product, TRUSTED_PRICE_CONFIDENCE
 
 HAUL_POOL_TTL = 300
 SHOWCASE_POOL_TTL = 30 * 60
@@ -20,7 +20,6 @@ SHOWCASE_STALE_FOR = 24 * 60 * 60
 SHOWCASE_FETCH_COUNT = 12
 HAUL_HISTORY_LIMIT = 50
 SHOWCASE_HISTORY_LIMIT = 24
-# Alias di compatibilità: il valore vive esclusivamente in app_constants.
 DISPLAY_BATCH_SIZE = app_constants.DISPLAY_BATCH_SIZE
 
 
@@ -38,12 +37,21 @@ def _positive_float(value: Any) -> float | None:
     return candidate
 
 
-def _prepare_price_display(product: Product) -> Product:
-    """Espone il prezzo solo quando proviene da un segnale Amazon esplicito."""
+def _price_is_fresh(product: Product, now: float | None = None) -> bool:
+    verified_at = _positive_float(product.get("price_verified_at"))
+    if verified_at is None:
+        return False
+    current = float(now if now is not None else time.time())
+    return current - verified_at <= app_constants.PRICE_FRESHNESS_SECONDS
+
+
+def _prepare_price_display(product: Product, now: float | None = None) -> Product:
+    """Espone prezzi Amazon espliciti soltanto entro la finestra di freschezza."""
     prepared: Product = dict(product)
+    stamp = float(now if now is not None else time.time())
     verified = prepared.get("prezzo_verificato") is True
-    serp_confidence = str(prepared.get("_serp_price_confidence") or "").strip().lower()
-    trusted_serp = serp_confidence == "base_price_node"
+    confidence = str(prepared.get("_serp_price_confidence") or "").strip().lower()
+    trusted_serp = confidence in TRUSTED_PRICE_CONFIDENCE
 
     final_price = _positive_float(prepared.get("prezzo_finale"))
     old_price = _positive_float(prepared.get("prezzo_iniziale"))
@@ -55,14 +63,23 @@ def _prepare_price_display(product: Product) -> Product:
             prepared["prezzo_finale"] = final_price
             prepared["prezzo_iniziale"] = old_price
 
-    displayable = final_price is not None and (verified or trusted_serp)
+    if final_price is not None and not prepared.get("price_verified_at"):
+        prepared["price_verified_at"] = stamp
+
+    fresh = _price_is_fresh(prepared, stamp)
+    displayable = final_price is not None and fresh and (verified or trusted_serp)
     prepared["_price_displayable"] = displayable
 
     if not displayable:
         prepared["_price_display_source"] = ""
         return prepared
 
-    prepared["_price_display_source"] = "amazon_verified" if verified else "amazon_serp"
+    if verified:
+        prepared["_price_display_source"] = "amazon_verified"
+        prepared.setdefault("price_source", PriceSource.AMAZON_DETAIL.value)
+    else:
+        prepared["_price_display_source"] = "amazon_card"
+        prepared.setdefault("price_source", PriceSource.AMAZON_CARD.value)
     prepared["prezzo_finale"] = final_price
 
     if old_price is not None and old_price > final_price:
@@ -82,12 +99,20 @@ def _stamp(products: Iterable[Product], fetched_at: float | None = None) -> list
     stamp = float(fetched_at or time.time())
     result: list[Product] = []
     for product in product_dedup.unique(list(products or [])):
-        copy: Product = _prepare_price_display(dict(product))
+        copy: Product = dict(product)
         copy.setdefault("_fetched_at", stamp)
         copy.setdefault("_source_label", str(copy.get("source") or "Amazon"))
-        # Il timestamp prezzo è distinto dal semplice recupero della scheda.
-        if price_is_displayable(copy) and not copy.get("price_verified_at"):
-            copy["price_verified_at"] = stamp
+        copy = _prepare_price_display(copy, stamp)
+        result.append(copy)
+    return result
+
+
+def _mark_displayed(products: Iterable[Product]) -> list[Product]:
+    now = time.time()
+    result: list[Product] = []
+    for product in products:
+        copy: Product = dict(product)
+        copy["displayed_at"] = now
         result.append(copy)
     return result
 
@@ -104,7 +129,11 @@ def _sample_fresh(
     exclude_asins: Iterable[str] = (),
 ) -> list[Product]:
     target = max(1, int(count))
-    excluded = {str(value).strip().upper() for value in exclude_asins if str(value).strip()}
+    excluded = {
+        str(value).strip().upper()
+        for value in exclude_asins
+        if str(value).strip()
+    }
     unique_pool = product_dedup.unique(list(pool or []))
     fresh = [product for product in unique_pool if _asin(product) not in excluded]
     previous = [product for product in unique_pool if _asin(product) in excluded]
@@ -114,22 +143,34 @@ def _sample_fresh(
     selected = fresh[:target]
     if len(selected) < target:
         selected.extend(previous[: target - len(selected)])
-    telemetry.increment("catalog_sample_fresh", len([p for p in selected if _asin(p) not in excluded]))
-    telemetry.increment("catalog_sample_repeated", len([p for p in selected if _asin(p) in excluded]))
+    telemetry.increment(
+        "catalog_sample_fresh",
+        len([p for p in selected if _asin(p) not in excluded]),
+    )
+    telemetry.increment(
+        "catalog_sample_repeated",
+        len([p for p in selected if _asin(p) in excluded]),
+    )
     return selected[:target]
 
 
-def _http_counter() -> int:
-    return telemetry.counter_value("amazon_http_requests")
-
-
-def _observe_http_delta(metric: str, before: int) -> None:
-    telemetry.observe_value(metric, max(0, _http_counter() - before))
+def _observe_batch(prefix: str, products: list[Product]) -> None:
+    if not products:
+        return
+    visible_prices = sum(1 for product in products if price_is_displayable(product))
+    visible_images = sum(
+        1 for product in products if str(product.get("immagine_url") or "").strip()
+    )
+    telemetry.observe_value(
+        f"{prefix}_price_visible_ratio", visible_prices / len(products)
+    )
+    telemetry.observe_value(
+        f"{prefix}_image_visible_ratio", visible_images / len(products)
+    )
 
 
 def _haul_pool(partner_tag: str) -> list[Product]:
-    products = amazon_gateway.fetch_haul_products(partner_tag)
-    products = _stamp(products)
+    products = _stamp(amazon_gateway.fetch_haul_products(partner_tag))
     if not products:
         raise amazon_gateway.BudgetUnavailable("Nessun prodotto HAUL leggibile")
     telemetry.observe_value("haul_pool_size", len(products))
@@ -141,38 +182,41 @@ def get_haul_selection(
     refresh_token: str | None = None,
     exclude_asins: Iterable[str] = (),
 ) -> list[Product]:
-    before = _http_counter()
-    try:
-        tag = amazon_gateway.get_partner_tag()
-        if not tag:
-            return []
-        target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), 10))
-        pool = shared_results.get(
-            ("haul-pool-v4", tag),
-            HAUL_POOL_TTL,
-            lambda: _haul_pool(tag),
-            retry=30,
-            stale_for=900,
-            report_failure=True,
+    tag = amazon_gateway.get_partner_tag()
+    if not tag:
+        return []
+    target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), 10))
+    pool = shared_results.get(
+        (f"haul-pool-v{app_constants.CACHE_SCHEMA_VERSION}", tag),
+        HAUL_POOL_TTL,
+        lambda: _haul_pool(tag),
+        retry=30,
+        stale_for=900,
+        report_failure=True,
+    )
+    selected = _mark_displayed(
+        _sample_fresh(
+            pool,
+            target,
+            str(refresh_token or time.time_ns()),
+            exclude_asins,
         )
-        token = str(refresh_token or time.time_ns())
-        return _sample_fresh(pool, target, token, exclude_asins)
-    finally:
-        _observe_http_delta("haul_http_requests_per_interaction", before)
+    )
+    _observe_batch("haul", selected)
+    return selected
 
 
 def _showcase_page_index(now: float | None = None) -> int:
-    """Ruota la pagina Amazon solo quando scade la cache condivisa."""
     current = float(now if now is not None else time.time())
     bucket = int(current // SHOWCASE_POOL_TTL)
-    return bucket % len(amazon_html.SHOWCASE_PAGES)
+    return bucket % len(showcase_parser.SHOWCASE_PAGES)
 
 
 def _showcase_pool(tag: str) -> list[Product]:
     page_index = _showcase_page_index()
     started = time.perf_counter()
     try:
-        products = amazon_html.fetch_showcase_products_fast(
+        products = showcase_parser.fetch_products(
             page_index=page_index,
             partner_tag=tag,
             item_count=SHOWCASE_FETCH_COUNT,
@@ -180,12 +224,13 @@ def _showcase_pool(tag: str) -> list[Product]:
     except Exception:
         telemetry.increment("showcase_fast_fetch_error")
         raise
-
     products = _stamp(products or [])
     telemetry.observe("showcase_fast_fetch_seconds", time.perf_counter() - started)
     telemetry.observe_value("showcase_pool_size", len(products))
     if not products:
-        raise amazon_gateway.BudgetUnavailable("Nessun prodotto recuperabile per la Vetrina")
+        raise amazon_gateway.BudgetUnavailable(
+            "Nessun prodotto recuperabile per la Vetrina"
+        )
     return products
 
 
@@ -194,43 +239,40 @@ def get_showcase_selection(
     refresh_token: str | None = None,
     exclude_asins: Iterable[str] = (),
 ) -> list[Product]:
-    before = _http_counter()
-    try:
-        tag = amazon_gateway.get_partner_tag()
-        if not tag:
-            return []
+    tag = amazon_gateway.get_partner_tag()
+    if not tag:
+        return []
 
-        target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
-        token = str(refresh_token or time.time_ns())
+    target = max(
+        1,
+        min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE),
+    )
+    token = str(refresh_token or time.time_ns())
+    pool = shared_results.get(
+        (f"showcase-pool-v{app_constants.CACHE_SCHEMA_VERSION}", tag),
+        SHOWCASE_POOL_TTL,
+        lambda: _showcase_pool(tag),
+        retry=60,
+        stale_for=SHOWCASE_STALE_FOR,
+        report_failure=True,
+    )
 
-        pool = shared_results.get(
-            ("showcase-pool-v7", tag),
-            SHOWCASE_POOL_TTL,
-            lambda: _showcase_pool(tag),
-            retry=60,
-            stale_for=SHOWCASE_STALE_FOR,
-            report_failure=True,
-        )
+    selected = _sample_fresh(pool, target, token, exclude_asins)
+    if not selected:
+        return []
+    selected_for_detail: list[Product] = [
+        {key: value for key, value in dict(product).items() if key != "variants"}
+        for product in selected
+    ]
 
-        selected = _sample_fresh(pool, target, token, exclude_asins)
-        if not selected:
-            return []
-
-        selected_for_detail: list[Product] = [
-            {key: value for key, value in dict(product).items() if key != "variants"}
-            for product in selected
-        ]
-
-        started = time.perf_counter()
-        enriched = amazon_gateway.enrich_product_details(selected_for_detail)
-        enriched = _stamp(enriched)
-        telemetry.observe("showcase_detail_enrich_seconds", time.perf_counter() - started)
-        visible = sum(1 for product in enriched if price_is_displayable(product))
-        telemetry.observe_value("showcase_detail_prices_visible", visible)
-        telemetry.observe_value("price_visible_ratio", visible / max(1, len(enriched)))
-        return enriched[:target]
-    finally:
-        _observe_http_delta("showcase_http_requests_per_interaction", before)
+    started = time.perf_counter()
+    enriched = _stamp(amazon_gateway.enrich_product_details(selected_for_detail))
+    telemetry.observe(
+        "showcase_detail_enrich_seconds", time.perf_counter() - started
+    )
+    enriched = _mark_displayed(enriched[:target])
+    _observe_batch("showcase", enriched)
+    return enriched
 
 
 def search_products(
@@ -240,44 +282,53 @@ def search_products(
     item_count: int,
     exclude_asins: Iterable[str] = (),
 ) -> list[Product]:
-    before = _http_counter()
-    try:
-        clean = " ".join(str(keyword or "").split())
-        if not clean:
-            return []
-        # Il gateway è l'unico livello che esegue l'eventuale recovery dettaglio.
-        products = amazon_gateway.search_products(
-            keyword=clean,
-            sort_type=sort_type,
-            prime_only=bool(prime_only),
-            item_count=max(1, min(int(item_count), amazon_gateway.MAX_RESULTS)),
-            exclude_asins=tuple(
-                str(value).strip().upper()
-                for value in exclude_asins
-                if str(value).strip()
-            ),
-        )
-        stamped = _stamp(products or [])
-        visible = sum(1 for product in stamped if price_is_displayable(product))
-        telemetry.observe_value("search_price_visible_ratio", visible / max(1, len(stamped)))
-        return stamped
-    finally:
-        # Conta le richieste HTML dirette e i recovery dettaglio instradati nel
-        # nuovo confine HTTP. Le chiamate Creators API legacy restano separate.
-        _observe_http_delta("search_html_http_requests_per_interaction", before)
+    clean = " ".join(str(keyword or "").split())
+    if not clean:
+        return []
+    products = amazon_gateway.search_products(
+        keyword=clean,
+        sort_type=sort_type,
+        prime_only=bool(prime_only),
+        item_count=max(1, min(int(item_count), amazon_gateway.MAX_RESULTS)),
+        exclude_asins=tuple(
+            str(value).strip().upper()
+            for value in exclude_asins
+            if str(value).strip()
+        ),
+    )
+    stamped = _mark_displayed(_stamp(products or []))
+    _observe_batch("search", stamped)
+    return stamped
 
 
 def price_is_displayable(product: Product) -> bool:
     if product.get("_price_displayable") is True:
-        return _positive_float(product.get("prezzo_finale")) is not None
-    return (
+        return (
+            _positive_float(product.get("prezzo_finale")) is not None
+            and _price_is_fresh(product)
+        )
+    confidence = str(product.get("_serp_price_confidence") or "").strip().lower()
+    trusted = (
         product.get("prezzo_verificato") is True
+        or confidence in TRUSTED_PRICE_CONFIDENCE
+    )
+    return (
+        trusted
         and _positive_float(product.get("prezzo_finale")) is not None
+        and _price_is_fresh(product)
     )
 
 
-def extend_history(history: Iterable[str], products: Iterable[Product], limit: int) -> list[str]:
-    values = [str(value).strip().upper() for value in history if str(value).strip()]
+def extend_history(
+    history: Iterable[str],
+    products: Iterable[Product],
+    limit: int,
+) -> list[str]:
+    values = [
+        str(value).strip().upper()
+        for value in history
+        if str(value).strip()
+    ]
     for product in products:
         value = _asin(product)
         if value:

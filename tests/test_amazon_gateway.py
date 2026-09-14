@@ -13,11 +13,7 @@ def test_search_recovers_missing_image_and_verified_price(monkeypatch):
         "link_affiliato": "https://www.amazon.it/dp/B012345678?tag=test-21",
     }
 
-    monkeypatch.setattr(
-        amazon_gateway.creators_api,
-        "search",
-        lambda **kwargs: [dict(base)],
-    )
+    monkeypatch.setattr(amazon_gateway.creators_api, "search", lambda **kwargs: [dict(base)])
     monkeypatch.setattr(
         amazon_gateway,
         "enrich_product_details",
@@ -55,13 +51,7 @@ def test_search_does_not_recover_complete_product(monkeypatch):
         "prezzo_verificato": True,
         "link_affiliato": "https://www.amazon.it/dp/B012345678?tag=test-21",
     }
-
-    monkeypatch.setattr(
-        amazon_gateway.creators_api,
-        "search",
-        lambda **kwargs: [dict(complete)],
-    )
-
+    monkeypatch.setattr(amazon_gateway.creators_api, "search", lambda **kwargs: [dict(complete)])
     called = {"value": False}
 
     def fail_if_called(products):
@@ -69,14 +59,12 @@ def test_search_does_not_recover_complete_product(monkeypatch):
         return list(products)
 
     monkeypatch.setattr(amazon_gateway, "enrich_product_details", fail_if_called)
-
     products = amazon_gateway.search_products(
         keyword="asics",
         sort_type="Prezzo minimo",
         prime_only=False,
         item_count=3,
     )
-
     assert products[0]["prezzo_finale"] == 79.90
     assert called["value"] is False
 
@@ -98,8 +86,35 @@ def test_recovery_never_replaces_a_known_price_with_unverified_data():
         "prezzo_verificato": False,
         "source": "amazon_detail_fast_unverified",
     }
-
     merged = amazon_gateway._merge_recovered_product(original, recovered)
     assert merged["immagine_url"].startswith("https://m.media-amazon.com/")
     assert merged["prezzo_finale"] == 49.90
     assert merged["_serp_price_confidence"] == "base_price_node"
+
+
+def test_visible_batch_never_triggers_more_than_three_detail_loaders(monkeypatch):
+    calls = []
+    items = [
+        {
+            "asin": f"B00000000{i}",
+            "titolo": f"Prodotto {i}",
+            "link_affiliato": f"https://www.amazon.it/dp/B00000000{i}?tag=test-21",
+        }
+        for i in range(1, 4)
+    ]
+
+    monkeypatch.setattr(amazon_gateway.shared_results, "has_fresh", lambda key: False)
+
+    def fake_get(key, ttl, loader, **kwargs):
+        return loader()
+
+    monkeypatch.setattr(amazon_gateway.shared_results, "get", fake_get)
+
+    def fake_enrich(product):
+        calls.append(product["asin"])
+        return {**product, "prezzo_verificato": False}
+
+    monkeypatch.setattr(amazon_gateway.amazon_html, "enrich_product_detail_fast", fake_enrich)
+    result = amazon_gateway.enrich_product_details(items)
+    assert len(result) == 3
+    assert len(calls) == 3

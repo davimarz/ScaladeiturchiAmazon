@@ -2,3 +2,5 @@
 pytest==9.1.1
 pip-audit==2.9.0
 playwright==1.55.0
+ruff==0.13.2
+mypy==1.18.2

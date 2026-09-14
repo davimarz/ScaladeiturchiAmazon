@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import app_constants
 import catalog_service
 
@@ -60,7 +62,7 @@ def test_trusted_amazon_serp_price_is_displayable_and_discount_is_computed():
         "_serp_price_confidence": "base_price_node",
     })
     assert catalog_service.price_is_displayable(prepared)
-    assert prepared["_price_display_source"] == "amazon_serp"
+    assert prepared["_price_display_source"] == "amazon_card"
     assert prepared["sconto"] == "-20%"
     assert prepared["sconto_val"] == 20
 
@@ -91,7 +93,17 @@ def test_untrusted_unverified_price_stays_hidden():
     assert prepared["_price_display_source"] == ""
 
 
-def test_stamp_separates_product_and_price_timestamps():
+def test_price_freshness_hides_expired_price():
+    now = time.time()
+    prepared = catalog_service._prepare_price_display({
+        "prezzo_verificato": True,
+        "prezzo_finale": 10.0,
+        "price_verified_at": now - app_constants.PRICE_FRESHNESS_SECONDS - 1,
+    }, now=now)
+    assert not catalog_service.price_is_displayable(prepared)
+
+
+def test_stamp_separates_product_price_and_display_timestamps():
     products = catalog_service._stamp([{
         **_product(1),
         "prezzo_verificato": True,
@@ -99,6 +111,8 @@ def test_stamp_separates_product_and_price_timestamps():
     }], fetched_at=1234.0)
     assert products[0]["_fetched_at"] == 1234.0
     assert products[0]["price_verified_at"] == 1234.0
+    displayed = catalog_service._mark_displayed(products)
+    assert displayed[0]["displayed_at"] >= 1234.0
 
 
 def test_showcase_page_is_stable_inside_cache_window():
@@ -118,8 +132,8 @@ def test_showcase_pool_uses_one_direct_fetch(monkeypatch):
         return [_product(i) for i in range(item_count)]
 
     monkeypatch.setattr(
-        catalog_service.amazon_html,
-        "fetch_showcase_products_fast",
+        catalog_service.showcase_parser,
+        "fetch_products",
         fake_fetch,
     )
     products = catalog_service._showcase_pool("tag-21")
@@ -146,7 +160,7 @@ def test_showcase_enriches_only_selected_batch(monkeypatch):
             copy["prezzo_verificato"] = True
             copy["prezzo_finale"] = 20.0 + index
             copy["prezzo_iniziale"] = 30.0 + index
-            copy["price_verified_at"] = 1000.0
+            copy["price_verified_at"] = time.time()
             enriched.append(copy)
         return enriched
 
@@ -174,7 +188,7 @@ def test_search_uses_gateway_once_without_second_detail_recovery(monkeypatch):
             **_product(1),
             "prezzo_verificato": True,
             "prezzo_finale": 9.99,
-            "price_verified_at": 1000.0,
+            "price_verified_at": time.time(),
         }]
 
     monkeypatch.setattr(catalog_service.amazon_gateway, "search_products", fake_search)

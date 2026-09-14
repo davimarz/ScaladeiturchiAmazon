@@ -16,12 +16,13 @@ def test_image_url_allowlist():
     assert not ui_components._image_url("https://tracker.example.com/pixel.gif")
 
 
-def test_image_candidates_preserve_valid_fallback_order_without_duplicates():
+def test_image_candidates_preserve_valid_order_and_limit():
     product = {
         "immagine_url": "https://m.media-amazon.com/images/I/main.jpg",
         "immagine_fallback_urls": [
             "https://m.media-amazon.com/images/I/main.jpg",
             "https://images-na.ssl-images-amazon.com/images/P/B000000001.jpg",
+            "https://m.media-amazon.com/images/I/third.jpg",
             "https://tracker.example.com/pixel.gif",
         ],
     }
@@ -53,7 +54,7 @@ def test_image_markup_uses_lazy_loading_after_first_card():
     assert "width='198'" in eager and "height='198'" in eager
 
 
-def test_css_keeps_mobile_touch_targets_reduced_motion_and_image_ratio():
+def test_css_keeps_mobile_touch_targets_reduced_motion_and_sticky_nav():
     assert "min-height:44px" in ui_components.CSS
     assert "prefers-reduced-motion" in ui_components.CSS
     assert "--brand:" in ui_components.CSS
@@ -61,3 +62,6 @@ def test_css_keeps_mobile_touch_targets_reduced_motion_and_image_ratio():
     assert "object-fit:contain" in ui_components.CSS
     assert "object-position:center" in ui_components.CSS
     assert ".product-image-link{display:flex" in ui_components.CSS
+    assert ".st-key-main_nav{position:sticky" in ui_components.CSS
+    assert "#MainMenu, header, footer" not in ui_components.CSS
+    assert "@media(max-width:430px)" in ui_components.CSS

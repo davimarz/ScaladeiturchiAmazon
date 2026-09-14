@@ -7,9 +7,10 @@ import amazon_api
 import amazon_html
 import app_constants
 import creators_api
+import haul_parser
 import shared_results
 import telemetry
-from product_models import Product
+from product_models import PriceConfidence, PriceSource, Product, TRUSTED_PRICE_CONFIDENCE
 
 MAX_RESULTS = amazon_api.MAX_RESULTS
 BudgetUnavailable = amazon_api.api_budget.BudgetUnavailable
@@ -21,28 +22,40 @@ def get_partner_tag() -> str:
 
 
 def fetch_haul_products(partner_tag: str) -> list[Product]:
-    return list(amazon_html.fetch_haul_products(partner_tag))
+    return haul_parser.fetch_products(partner_tag)
 
 
 def _detail_cache_key(product: Product) -> tuple[str, str]:
     asin = str(product.get("asin") or "").strip().upper()
-    return ("amazon-detail-fast-v2", asin)
+    return (f"amazon-detail-fast-v{app_constants.CACHE_SCHEMA_VERSION}", asin)
 
 
 def _enrich_one_cached(product: Product) -> Product:
-    item: Product = {key: value for key, value in dict(product).items() if key != "variants"}
+    item: Product = {
+        key: value for key, value in dict(product).items() if key != "variants"
+    }
     asin = str(item.get("asin") or "").strip().upper()
     if len(asin) != 10:
         return item
 
+    cache_key = _detail_cache_key(item)
+    was_cached = shared_results.has_fresh(cache_key)
+    telemetry.increment("detail_cache_hit" if was_cached else "detail_cache_miss")
+    telemetry.observe_value("detail_cache_hit_ratio", 1.0 if was_cached else 0.0)
+
     def loader() -> list[Product]:
         telemetry.increment("amazon_http_detail_requests")
-        enriched = dict(amazon_html.enrich_product_detail_fast(dict(item)) or item)
+        enriched: Product = dict(
+            amazon_html.enrich_product_detail_fast(dict(item)) or item
+        )
         enriched.setdefault("detail_verified_at", enriched.get("price_verified_at"))
+        if enriched.get("prezzo_verificato") is True:
+            enriched["price_source"] = PriceSource.AMAZON_DETAIL.value
+            enriched["_serp_price_confidence"] = PriceConfidence.VERIFIED_DETAIL.value
         return [enriched]
 
     cached = shared_results.get(
-        _detail_cache_key(item),
+        cache_key,
         app_constants.SHOWCASE_DETAIL_CACHE_TTL,
         loader,
         retry=20,
@@ -51,13 +64,12 @@ def _enrich_one_cached(product: Product) -> Product:
         scrub_stale_prices=True,
     )
     if cached:
-        telemetry.increment("detail_cache_result")
         return dict(cached[0])
     return item
 
 
 def enrich_product_details(products: Iterable[Product]) -> list[Product]:
-    """Arricchisce al massimo il batch visibile, con cache per ASIN e deadline globale."""
+    """Arricchisce al massimo il batch visibile, con cache e deadline globale."""
     items: list[Product] = [
         {key: value for key, value in dict(product).items() if key != "variants"}
         for product in products or []
@@ -65,7 +77,9 @@ def enrich_product_details(products: Iterable[Product]) -> list[Product]:
     if not items:
         return []
 
-    executor = ThreadPoolExecutor(max_workers=min(app_constants.DISPLAY_BATCH_SIZE, len(items)))
+    executor = ThreadPoolExecutor(
+        max_workers=min(app_constants.DISPLAY_BATCH_SIZE, len(items))
+    )
     futures: dict[Future, int] = {
         executor.submit(_enrich_one_cached, item): index
         for index, item in enumerate(items)
@@ -80,8 +94,9 @@ def enrich_product_details(products: Iterable[Product]) -> list[Product]:
             index = futures[future]
             try:
                 results[index] = dict(future.result() or items[index])
-            except Exception:
+            except Exception as exc:
                 telemetry.increment("detail_enrich_error")
+                telemetry.increment(f"detail_enrich_error_{type(exc).__name__}")
         if pending:
             telemetry.increment("detail_enrich_timeout", len(pending))
             for future in pending:
@@ -98,11 +113,12 @@ def _needs_search_recovery(product: Product) -> bool:
     except (TypeError, ValueError):
         price = 0.0
     verified_price = product.get("prezzo_verificato") is True and price > 0
-    trusted_serp_price = (
-        str(product.get("_serp_price_confidence") or "").strip().lower() == "base_price_node"
+    trusted_card_price = (
+        str(product.get("_serp_price_confidence") or "").strip().lower()
+        in TRUSTED_PRICE_CONFIDENCE
         and price > 0
     )
-    return not image or not (verified_price or trusted_serp_price)
+    return not image or not (verified_price or trusted_card_price)
 
 
 def _merge_recovered_product(original: Product, recovered: Product) -> Product:
@@ -127,6 +143,7 @@ def _merge_recovered_product(original: Product, recovered: Product) -> Product:
             "prezzo_verificato",
             "price_verified_at",
             "detail_verified_at",
+            "price_source",
             "_serp_price_confidence",
             "sconto",
             "sconto_val",
@@ -135,7 +152,17 @@ def _merge_recovered_product(original: Product, recovered: Product) -> Product:
             if key in recovered:
                 merged[key] = recovered[key]
 
-    for key in ("titolo", "size", "color", "sold_qty_month", "sold_qty_label"):
+    for key in (
+        "titolo",
+        "size",
+        "color",
+        "sold_qty_month",
+        "sold_qty_label",
+        "prime",
+        "is_prime",
+        "prime_detail_verified",
+        "prime_source",
+    ):
         value = recovered.get(key)
         if value not in (None, ""):
             merged[key] = value
@@ -152,26 +179,33 @@ def search_products(
     cache_buster: str | None = None,
     partner_tag_override: str | None = None,
 ) -> list[Product]:
-    products: list[Product] = list(creators_api.search(
-        keyword=keyword,
-        sort_type=sort_type,
-        prime_only=prime_only,
-        item_count=item_count,
-        exclude_asins=exclude_asins,
-        cache_buster=cache_buster,
-        partner_tag_override=partner_tag_override,
-    ) or [])
+    products: list[Product] = list(
+        creators_api.search(
+            keyword=keyword,
+            sort_type=sort_type,
+            prime_only=prime_only,
+            item_count=item_count,
+            exclude_asins=exclude_asins,
+            cache_buster=cache_buster,
+            partner_tag_override=partner_tag_override,
+        )
+        or []
+    )
 
-    # Un solo recovery dettaglio: catalog_service non ne esegue un secondo.
     recovery_indexes = [
-        index for index, product in enumerate(products)
+        index
+        for index, product in enumerate(products)
         if _needs_search_recovery(product)
-    ][:app_constants.SEARCH_DETAIL_RECOVERY_LIMIT]
+    ][: app_constants.SEARCH_DETAIL_RECOVERY_LIMIT]
 
     if recovery_indexes:
-        recovered = enrich_product_details(products[index] for index in recovery_indexes)
+        recovered = enrich_product_details(
+            products[index] for index in recovery_indexes
+        )
         for index, recovered_product in zip(recovery_indexes, recovered):
-            products[index] = _merge_recovered_product(products[index], recovered_product)
+            products[index] = _merge_recovered_product(
+                products[index], recovered_product
+            )
 
     return products
 

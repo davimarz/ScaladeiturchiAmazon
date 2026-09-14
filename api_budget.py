@@ -1,7 +1,7 @@
 """Shared Creators API budget and pacing.
 
-Redis is used when REDIS_URL is configured. Set STRICT_REDIS=1 for multi-instance
-production so a Redis outage cannot silently fall back to per-instance SQLite.
+Redis is optional. Without REDIS_URL the application uses SQLite. When Redis is
+configured, redis_client centralizes TLS/timeouts and STRICT_REDIS behaviour.
 """
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    import redis
-except ImportError:  # pragma: no cover
-    redis = None
+import redis_client
 
-DB_PATH = Path(os.getenv("SCALA_STATE_DB", "").strip() or (Path(__file__).resolve().parent / ".runtime" / "api_usage.sqlite3"))
+DB_PATH = Path(
+    os.getenv("SCALA_STATE_DB", "").strip()
+    or (Path(__file__).resolve().parent / ".runtime" / "api_usage.sqlite3")
+)
 
 
 class BudgetUnavailable(RuntimeError):
@@ -25,7 +25,7 @@ class BudgetUnavailable(RuntimeError):
 
 
 def _strict_redis() -> bool:
-    return os.getenv("STRICT_REDIS", "0").strip().lower() in {"1", "true", "yes", "on"}
+    return redis_client.strict()
 
 
 def _day() -> str:
@@ -43,10 +43,7 @@ def _connect():
 
 
 def _redis_client():
-    url = os.getenv("REDIS_URL", "").strip()
-    if not url or redis is None:
-        return None
-    return redis.Redis.from_url(url, decode_responses=True, socket_timeout=3, socket_connect_timeout=3)
+    return redis_client.get_client(timeout=3.0)
 
 
 def _usage_redis(limit: int) -> dict:
@@ -55,7 +52,13 @@ def _usage_redis(limit: int) -> dict:
         raise BudgetUnavailable("Redis non disponibile")
     day = _day()
     used = int(client.get(f"scala:api:usage:{day}") or 0)
-    return {"day_utc": day, "calls": used, "limit": limit, "remaining": max(0, limit - used), "backend": "redis"}
+    return {
+        "day_utc": day,
+        "calls": used,
+        "limit": limit,
+        "remaining": max(0, limit - used),
+        "backend": "redis",
+    }
 
 
 def _usage_sqlite(limit: int) -> dict:
@@ -66,13 +69,19 @@ def _usage_sqlite(limit: int) -> dict:
         finally:
             conn.close()
         used = row[0] if row else 0
-        return {"day_utc": _day(), "calls": used, "limit": limit, "remaining": max(0, limit - used), "backend": "sqlite"}
+        return {
+            "day_utc": _day(),
+            "calls": used,
+            "limit": limit,
+            "remaining": max(0, limit - used),
+            "backend": "sqlite",
+        }
     except (OSError, sqlite3.Error) as exc:
         raise BudgetUnavailable("Contatore richieste non disponibile") from exc
 
 
 def usage(limit: int = 800) -> dict:
-    if os.getenv("REDIS_URL", "").strip():
+    if redis_client.configured():
         try:
             return _usage_redis(limit)
         except Exception as exc:
@@ -91,7 +100,11 @@ def _reserve_redis(limit: int, interval: float, max_wait: float) -> None:
     day = _day()
     usage_key = f"scala:api:usage:{day}"
     pacing_key = "scala:api:pacing"
-    lock = client.lock("scala:api:reserve:lock", timeout=max(5, int(max_wait) + 2), blocking_timeout=max_wait)
+    lock = client.lock(
+        "scala:api:reserve:lock",
+        timeout=max(5, int(max_wait) + 2),
+        blocking_timeout=max_wait,
+    )
     while True:
         with lock:
             used = int(client.get(usage_key) or 0)
@@ -127,8 +140,15 @@ def _reserve_sqlite(limit: int, interval: float, max_wait: float) -> None:
                 row = conn.execute("SELECT next_at FROM pacing WHERE id=1").fetchone()
                 wait = max(0.0, (row[0] if row else 0) - time.time())
                 if wait <= 0:
-                    conn.execute("INSERT INTO usage(day,calls) VALUES (?,1) ON CONFLICT(day) DO UPDATE SET calls=calls+1", (day,))
-                    conn.execute("INSERT OR REPLACE INTO pacing VALUES (1,?)", (time.time() + interval,))
+                    conn.execute(
+                        "INSERT INTO usage(day,calls) VALUES (?,1) "
+                        "ON CONFLICT(day) DO UPDATE SET calls=calls+1",
+                        (day,),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO pacing VALUES (1,?)",
+                        (time.time() + interval,),
+                    )
                     conn.commit()
                     return
                 conn.rollback()
@@ -148,7 +168,7 @@ def reserve(limit: int = 800, interval: float = 1.1, max_wait: float = 5) -> Non
     interval = max(0.1, float(interval))
     if limit <= 0:
         raise BudgetUnavailable("Budget giornaliero disabilitato")
-    if os.getenv("REDIS_URL", "").strip():
+    if redis_client.configured():
         try:
             _reserve_redis(limit, interval, max_wait)
             return
@@ -164,6 +184,7 @@ def reserve(limit: int = 800, interval: float = 1.1, max_wait: float = 5) -> Non
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=800)
     print(json.dumps(usage(parser.parse_args().limit), indent=2))

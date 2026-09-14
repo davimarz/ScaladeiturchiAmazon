@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -23,6 +24,7 @@ def test_redis_cache_round_trip(monkeypatch):
         return [{"asin": "B000000001", "prezzo_finale": 10.0, "prezzo_verificato": True}]
 
     first = shared_results.get(key, 30, loader)
+    assert shared_results.has_fresh(key)
     with shared_results._lock:
         shared_results._entries.pop(key, None)
     second = shared_results.get(key, 30, loader)
@@ -53,7 +55,6 @@ def test_loader_failure_returns_memory_stale_even_when_report_failure_is_true(mo
     )
     assert result
     assert result[0]["asin"] == "B000000002"
-    # stale catalog data never claims a current price
     assert result[0]["prezzo_finale"] is None
 
 
@@ -76,3 +77,24 @@ def test_detail_stale_can_preserve_payload_when_explicitly_requested(monkeypatch
         scrub_stale_prices=False,
     )
     assert result[0]["prezzo_finale"] == 30.0
+
+
+def test_single_flight_prevents_duplicate_loader_calls(monkeypatch):
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    key = ("single-flight", time.time_ns())
+    calls = {"count": 0}
+
+    def loader():
+        calls["count"] += 1
+        time.sleep(0.05)
+        return [{"asin": "B000000004"}]
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(lambda _: shared_results.get(key, 30, loader), range(4)))
+    assert calls["count"] == 1
+    assert all(result[0]["asin"] == "B000000004" for result in results)
+
+
+def test_redis_serialization_rejects_unknown_types():
+    with pytest.raises(TypeError):
+        shared_results._json_payload({"data": {"bad": object()}})
