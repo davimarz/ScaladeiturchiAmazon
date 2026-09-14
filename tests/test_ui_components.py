@@ -58,6 +58,8 @@ def test_css_keeps_mobile_touch_targets_reduced_motion_and_sticky_nav():
     assert "min-height:44px" in ui_components.CSS
     assert "prefers-reduced-motion" in ui_components.CSS
     assert "--brand:" in ui_components.CSS
+    assert "--success:#047857" in ui_components.CSS
+    assert "--amazon-orange:#ff9900" in ui_components.CSS
     assert "-webkit-line-clamp:3" in ui_components.CSS
     assert "object-fit:contain" in ui_components.CSS
     assert "object-position:center" in ui_components.CSS
@@ -65,3 +67,10 @@ def test_css_keeps_mobile_touch_targets_reduced_motion_and_sticky_nav():
     assert ".st-key-main_nav{position:sticky" in ui_components.CSS
     assert "#MainMenu, header, footer" not in ui_components.CSS
     assert "@media(max-width:430px)" in ui_components.CSS
+
+
+def test_p3_mobile_polish_uses_standard_weights_and_card_area_spinner():
+    assert "font-weight:650" not in ui_components.CSS
+    assert ".stSpinner{min-height:86px" in ui_components.CSS
+    assert ".product-card{padding:8px;border-radius:10px;box-shadow:none}" in ui_components.CSS
+    assert ".product-card:hover{transform:none;box-shadow:none" in ui_components.CSS
