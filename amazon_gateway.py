@@ -1,48 +1,97 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Iterable
 
 import amazon_api
 import amazon_html
+import app_constants
 import creators_api
+import shared_results
+import telemetry
+from product_models import Product
 
 MAX_RESULTS = amazon_api.MAX_RESULTS
 BudgetUnavailable = amazon_api.api_budget.BudgetUnavailable
 RetryPending = amazon_api.shared_results.RetryPending
-SEARCH_RECOVERY_LIMIT = 4
 
 
 def get_partner_tag() -> str:
     return amazon_api.get_partner_tag()
 
 
-def fetch_haul_products(partner_tag: str) -> list[dict]:
-    return amazon_html.fetch_haul_products(partner_tag)
+def fetch_haul_products(partner_tag: str) -> list[Product]:
+    return list(amazon_html.fetch_haul_products(partner_tag))
 
 
-def enrich_product_details(products: Iterable[dict]) -> list[dict]:
-    # Drop the presentation-only `variants` wrapper before enriching. Keeping it
-    # would cause product_dedup.unique() to flatten back to the pre-enrichment
-    # variant and discard the newly verified price fields.
-    items = [
+def _detail_cache_key(product: Product) -> tuple[str, str]:
+    asin = str(product.get("asin") or "").strip().upper()
+    return ("amazon-detail-fast-v2", asin)
+
+
+def _enrich_one_cached(product: Product) -> Product:
+    item: Product = {key: value for key, value in dict(product).items() if key != "variants"}
+    asin = str(item.get("asin") or "").strip().upper()
+    if len(asin) != 10:
+        return item
+
+    def loader() -> list[Product]:
+        telemetry.increment("amazon_http_detail_requests")
+        enriched = dict(amazon_html.enrich_product_detail_fast(dict(item)) or item)
+        enriched.setdefault("detail_verified_at", enriched.get("price_verified_at"))
+        return [enriched]
+
+    cached = shared_results.get(
+        _detail_cache_key(item),
+        app_constants.SHOWCASE_DETAIL_CACHE_TTL,
+        loader,
+        retry=20,
+        stale_for=app_constants.SHOWCASE_DETAIL_STALE_FOR,
+        report_failure=False,
+        scrub_stale_prices=True,
+    )
+    if cached:
+        telemetry.increment("detail_cache_result")
+        return dict(cached[0])
+    return item
+
+
+def enrich_product_details(products: Iterable[Product]) -> list[Product]:
+    """Arricchisce al massimo il batch visibile, con cache per ASIN e deadline globale."""
+    items: list[Product] = [
         {key: value for key, value in dict(product).items() if key != "variants"}
         for product in products or []
     ]
     if not items:
         return []
 
-    def enrich(product: dict) -> dict:
-        try:
-            return dict(amazon_html.enrich_product_detail_fast(dict(product)) or product)
-        except Exception:
-            return dict(product)
+    executor = ThreadPoolExecutor(max_workers=min(app_constants.DISPLAY_BATCH_SIZE, len(items)))
+    futures: dict[Future, int] = {
+        executor.submit(_enrich_one_cached, item): index
+        for index, item in enumerate(items)
+    }
+    results: list[Product] = [dict(item) for item in items]
+    try:
+        done, pending = wait(
+            futures,
+            timeout=app_constants.SHOWCASE_DETAIL_ENRICH_TIMEOUT,
+        )
+        for future in done:
+            index = futures[future]
+            try:
+                results[index] = dict(future.result() or items[index])
+            except Exception:
+                telemetry.increment("detail_enrich_error")
+        if pending:
+            telemetry.increment("detail_enrich_timeout", len(pending))
+            for future in pending:
+                future.cancel()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+    return results
 
-    with ThreadPoolExecutor(max_workers=min(4, len(items))) as executor:
-        return list(executor.map(enrich, items))
 
-
-def _needs_search_recovery(product: dict) -> bool:
+def _needs_search_recovery(product: Product) -> bool:
     image = str(product.get("immagine_url") or "").strip()
     try:
         price = float(product.get("prezzo_finale") or 0)
@@ -56,8 +105,8 @@ def _needs_search_recovery(product: dict) -> bool:
     return not image or not (verified_price or trusted_serp_price)
 
 
-def _merge_recovered_product(original: dict, recovered: dict) -> dict:
-    merged = dict(original)
+def _merge_recovered_product(original: Product, recovered: Product) -> Product:
+    merged: Product = dict(original)
     if not recovered:
         return merged
 
@@ -76,6 +125,8 @@ def _merge_recovered_product(original: dict, recovered: dict) -> dict:
             "prezzo_finale",
             "prezzo_iniziale",
             "prezzo_verificato",
+            "price_verified_at",
+            "detail_verified_at",
             "_serp_price_confidence",
             "sconto",
             "sconto_val",
@@ -100,8 +151,8 @@ def search_products(
     exclude_asins: Iterable[str] = (),
     cache_buster: str | None = None,
     partner_tag_override: str | None = None,
-) -> list[dict]:
-    products = list(creators_api.search(
+) -> list[Product]:
+    products: list[Product] = list(creators_api.search(
         keyword=keyword,
         sort_type=sort_type,
         prime_only=prime_only,
@@ -111,15 +162,11 @@ def search_products(
         partner_tag_override=partner_tag_override,
     ) or [])
 
-    # SearchItems/HTML fallback can occasionally return a valid Amazon product
-    # before its image or current price is available. Recover only the first few
-    # incomplete cards, in parallel, so normal searches stay fast while the UI
-    # gets a second chance to obtain the canonical image and price from the
-    # corresponding Amazon product page.
+    # Un solo recovery dettaglio: catalog_service non ne esegue un secondo.
     recovery_indexes = [
         index for index, product in enumerate(products)
         if _needs_search_recovery(product)
-    ][:SEARCH_RECOVERY_LIMIT]
+    ][:app_constants.SEARCH_DETAIL_RECOVERY_LIMIT]
 
     if recovery_indexes:
         recovered = enrich_product_details(products[index] for index in recovery_indexes)
