@@ -9,7 +9,6 @@ from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
-import amazon_api
 import amazon_gateway
 import app_constants
 import catalog_service
@@ -26,7 +25,7 @@ st.set_page_config(
 )
 
 LOGGER = logging.getLogger("amazon_affiliate_app")
-amazon_api.LOGGER.setLevel(logging.WARNING)
+logging.getLogger("amazon_affiliate").setLevel(logging.WARNING)
 MAX_RESULTS = amazon_gateway.MAX_RESULTS
 
 DEFAULTS = {
@@ -71,18 +70,21 @@ def _clear_query_params() -> None:
 
 
 def _set_tab(name: str) -> None:
+    """Naviga senza cambiare la selezione già caricata."""
     st.session_state["current_tab"] = name
     _clear_query_params()
 
 
-def _open_haul() -> None:
+def _refresh_haul() -> None:
+    """Richiede esplicitamente un nuovo campione HAUL."""
     st.session_state["current_tab"] = "haul"
     st.session_state["haul_refresh_token"] = str(time.time_ns())
     st.session_state["haul_loaded_token"] = None
     _clear_query_params()
 
 
-def _open_vetrina() -> None:
+def _refresh_vetrina() -> None:
+    """Richiede esplicitamente un nuovo campione Vetrina."""
     st.session_state["current_tab"] = "vetrina"
     st.session_state["vetrina_refresh_token"] = str(time.time_ns())
     st.session_state["vetrina_loaded_token"] = None
@@ -90,7 +92,6 @@ def _open_vetrina() -> None:
 
 
 def _clear_search() -> None:
-    """Clear search-related state safely from a widget callback."""
     st.session_state["search_keyword_input"] = ""
     st.session_state["offerte"] = []
     st.session_state["has_searched"] = False
@@ -108,7 +109,10 @@ def _valid_uuid(value: object) -> str | None:
 
 def _initialize_browser_identity() -> None:
     try:
-        component = components.declare_component("browser_identity", path=str(Path(__file__).parent / "browser_identity"))
+        component = components.declare_component(
+            "browser_identity",
+            path=str(Path(__file__).parent / "browser_identity"),
+        )
         value = component(key="persistent_browser_identity", default=None)
         valid = _valid_uuid(value)
         if valid:
@@ -172,10 +176,14 @@ def _sort_products(products: list[dict], label: str) -> list[dict]:
         def price_key(product: dict) -> tuple:
             try:
                 price = float(product.get("prezzo_finale"))
-                verified = product.get("prezzo_verificato") is True and math.isfinite(price) and price > 0
+                displayable = (
+                    catalog_service.price_is_displayable(product)
+                    and math.isfinite(price)
+                    and price > 0
+                )
             except (TypeError, ValueError):
-                verified, price = False, float("inf")
-            return (not verified, price)
+                displayable, price = False, float("inf")
+            return (not displayable, price)
         return sorted(items, key=price_key)
 
     def popularity_key(product: dict) -> tuple:
@@ -199,25 +207,38 @@ def _load_search(target: int, append: bool = False) -> None:
     started = time.perf_counter()
     cfg = dict(st.session_state.get("last_search") or {})
     existing = list(st.session_state.get("offerte") or []) if append else []
-    excluded = [str(p.get("asin") or "").strip().upper() for p in product_dedup.flatten(existing)]
-    count = min(max(1, int(target)), MAX_RESULTS - len(existing) if append else MAX_RESULTS)
+    excluded = [
+        str(p.get("asin") or "").strip().upper()
+        for p in product_dedup.flatten(existing)
+    ]
+    count = min(
+        max(1, int(target)),
+        MAX_RESULTS - len(existing) if append else MAX_RESULTS,
+    )
     if count <= 0:
         return
     try:
         with telemetry.timed("search_seconds"):
             products = catalog_service.search_products(
                 keyword=str(cfg.get("keyword") or ""),
-                sort_type=app_constants.SORT_TO_API.get(str(cfg.get("sort") or app_constants.SORT_PRICE), app_constants.SORT_PRICE),
+                sort_type=app_constants.SORT_TO_API.get(
+                    str(cfg.get("sort") or app_constants.SORT_PRICE),
+                    app_constants.SORT_PRICE,
+                ),
                 prime_only=bool(cfg.get("prime_only")),
                 item_count=count,
                 exclude_asins=excluded,
             )
-    except amazon_api.shared_results.RetryPending as exc:
-        st.session_state["search_notice"] = f"Amazon è temporaneamente occupato. Riprova {_retry_label(exc.retry_at)}."
+    except amazon_gateway.RetryPending as exc:
+        st.session_state["search_notice"] = (
+            f"Amazon è temporaneamente occupato. Riprova {_retry_label(exc.retry_at)}."
+        )
         telemetry.increment("search_retry_pending")
         return
-    except amazon_api.api_budget.BudgetUnavailable:
-        st.session_state["search_notice"] = "La ricerca interna è temporaneamente non disponibile. Riprova più tardi."
+    except amazon_gateway.BudgetUnavailable:
+        st.session_state["search_notice"] = (
+            "La ricerca interna è temporaneamente non disponibile. Riprova più tardi."
+        )
         telemetry.increment("search_budget_unavailable")
         return
     except Exception:
@@ -227,30 +248,63 @@ def _load_search(target: int, append: bool = False) -> None:
         return
 
     merged = product_dedup.unique(existing + list(products or []))[:MAX_RESULTS]
-    st.session_state["offerte"] = _sort_products(merged, str(cfg.get("sort") or app_constants.SORT_PRICE))
+    st.session_state["offerte"] = _sort_products(
+        merged,
+        str(cfg.get("sort") or app_constants.SORT_PRICE),
+    )
     st.session_state["has_searched"] = True
     if append and len(merged) > len(existing):
-        st.session_state["current_page"] = max(1, (len(merged) + app_constants.SEARCH_PAGE_SIZE - 1) // app_constants.SEARCH_PAGE_SIZE)
+        # Porta l'utente alla prima nuova pagina appena caricata.
+        st.session_state["current_page"] = max(
+            1,
+            (len(existing) // app_constants.SEARCH_PAGE_SIZE) + 1,
+        )
     if products:
         st.session_state["search_notice"] = ""
         telemetry.increment("search_success")
         telemetry.observe("time_to_first_card_seconds", time.perf_counter() - started)
     else:
-        st.session_state["search_notice"] = "Nessun nuovo prodotto disponibile. Prova un termine diverso."
+        st.session_state["search_notice"] = (
+            "Nessun nuovo prodotto disponibile. Prova un termine diverso."
+        )
 
 
 ui_components.render_brand()
 active_tab = st.session_state["current_tab"]
 nav1, nav2, nav3 = st.columns(3, gap="small")
 with nav1:
-    st.button("HAUL", key="nav_haul", type="primary" if active_tab == "haul" else "secondary", on_click=_open_haul, use_container_width=True)
+    st.button(
+        "HAUL",
+        key="nav_haul",
+        type="primary" if active_tab == "haul" else "secondary",
+        on_click=_set_tab,
+        args=("haul",),
+        use_container_width=True,
+    )
 with nav2:
-    st.button("Vetrina", key="nav_vetrina", type="primary" if active_tab == "vetrina" else "secondary", on_click=_open_vetrina, use_container_width=True)
+    st.button(
+        "Vetrina",
+        key="nav_vetrina",
+        type="primary" if active_tab == "vetrina" else "secondary",
+        on_click=_set_tab,
+        args=("vetrina",),
+        use_container_width=True,
+    )
 with nav3:
-    st.button("Cerca", key="nav_search", type="primary" if active_tab == "cerca" else "secondary", on_click=_set_tab, args=("cerca",), use_container_width=True)
+    st.button(
+        "Cerca",
+        key="nav_search",
+        type="primary" if active_tab == "cerca" else "secondary",
+        on_click=_set_tab,
+        args=("cerca",),
+        use_container_width=True,
+    )
 
 try:
-    shortcut = components.declare_component("home_shortcut", path=str(Path(__file__).parent / "home_shortcut"))
+    shortcut = components.declare_component(
+        "home_shortcut",
+        path=str(Path(__file__).parent / "home_shortcut"),
+    )
     shortcut(key="home_shortcut_prompt", default=None)
 except Exception:
     LOGGER.debug("Home shortcut component unavailable", exc_info=True)
@@ -262,22 +316,33 @@ if not partner_tag:
 active_tab = st.session_state["current_tab"]
 
 if active_tab == "haul":
-    st.markdown("<div class='promo'><span class='haul-badge'>HAUL</span> Scopri una selezione di prodotti. Promozioni e condizioni possono cambiare: verifica sempre i dettagli su Amazon.</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='promo'><span class='haul-badge'>HAUL</span> Scopri una selezione di prodotti. Promozioni e condizioni possono cambiare: verifica sempre i dettagli su Amazon.</div>",
+        unsafe_allow_html=True,
+    )
     current_token = str(st.session_state["haul_refresh_token"])
     if partner_tag and st.session_state.get("haul_loaded_token") != current_token:
         try:
             with st.spinner("Sto cercando nuove proposte HAUL…"), telemetry.timed("haul_load_seconds"):
-                products = catalog_service.get_haul_selection(app_constants.DISPLAY_BATCH_SIZE, current_token, st.session_state.get("haul_seen_asins", []))
+                products = catalog_service.get_haul_selection(
+                    app_constants.DISPLAY_BATCH_SIZE,
+                    current_token,
+                    st.session_state.get("haul_seen_asins", []),
+                )
             st.session_state["offerte_haul"] = product_dedup.unique(products or [])
-            st.session_state["haul_seen_asins"] = catalog_service.extend_history(st.session_state.get("haul_seen_asins", []), st.session_state["offerte_haul"], catalog_service.HAUL_HISTORY_LIMIT)
+            st.session_state["haul_seen_asins"] = catalog_service.extend_history(
+                st.session_state.get("haul_seen_asins", []),
+                st.session_state["offerte_haul"],
+                catalog_service.HAUL_HISTORY_LIMIT,
+            )
             st.session_state["haul_loaded_token"] = current_token
             telemetry.increment("haul_refresh_success")
-        except amazon_api.shared_results.RetryPending:
+        except amazon_gateway.RetryPending:
             st.info("HAUL è in aggiornamento. Riprova tra poco.")
         except Exception:
             LOGGER.exception("HAUL load failed")
             telemetry.increment("haul_refresh_error")
-            st.info("Non è stato possibile aggiornare HAUL in questo momento.")
+            st.info("Non è stato possibile aggiornare HAUL; restano visibili le proposte precedenti.")
 
     products = product_dedup.unique(st.session_state.get("offerte_haul", []))
     if products:
@@ -285,27 +350,47 @@ if active_tab == "haul":
         ui_components.render_price_notice()
         for index, product in enumerate(products):
             ui_components.render_product_card(product, eager_image=index == 0)
-        st.button(f"Mostrami altri {app_constants.DISPLAY_BATCH_SIZE}", key="haul_more", on_click=_open_haul, use_container_width=True)
+        st.button(
+            f"Mostrami altri {app_constants.DISPLAY_BATCH_SIZE}",
+            key="haul_more",
+            on_click=_refresh_haul,
+            use_container_width=True,
+        )
         ui_components.render_back_to_top()
     else:
         st.info("Nessun prodotto HAUL disponibile adesso.")
-        st.link_button("Apri Amazon HAUL", amazon_gateway.build_haul_link(), use_container_width=True)
+        st.link_button(
+            "Apri Amazon HAUL",
+            amazon_gateway.build_haul_link(),
+            use_container_width=True,
+        )
 
 elif active_tab == "vetrina":
-    st.markdown("<div class='promo'><strong>Vetrina</strong> · Idee d’acquisto aggiornate senza dover fare subito una ricerca.</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='promo'><strong>Vetrina</strong> · Idee d’acquisto aggiornate senza dover fare subito una ricerca.</div>",
+        unsafe_allow_html=True,
+    )
     current_token = str(st.session_state["vetrina_refresh_token"])
     if partner_tag and st.session_state.get("vetrina_loaded_token") != current_token:
         try:
             with st.spinner("Sto aggiornando la Vetrina…"), telemetry.timed("showcase_load_seconds"):
-                products = catalog_service.get_showcase_selection(app_constants.DISPLAY_BATCH_SIZE, current_token, st.session_state.get("vetrina_seen_asins", []))
+                products = catalog_service.get_showcase_selection(
+                    app_constants.DISPLAY_BATCH_SIZE,
+                    current_token,
+                    st.session_state.get("vetrina_seen_asins", []),
+                )
             st.session_state["offerte_vetrina"] = product_dedup.unique(products or [])
-            st.session_state["vetrina_seen_asins"] = catalog_service.extend_history(st.session_state.get("vetrina_seen_asins", []), st.session_state["offerte_vetrina"], catalog_service.SHOWCASE_HISTORY_LIMIT)
+            st.session_state["vetrina_seen_asins"] = catalog_service.extend_history(
+                st.session_state.get("vetrina_seen_asins", []),
+                st.session_state["offerte_vetrina"],
+                catalog_service.SHOWCASE_HISTORY_LIMIT,
+            )
             st.session_state["vetrina_loaded_token"] = current_token
             telemetry.increment("showcase_refresh_success")
         except Exception:
             LOGGER.exception("Showcase load failed")
             telemetry.increment("showcase_refresh_error")
-            st.info("La Vetrina è temporaneamente non disponibile.")
+            st.info("Aggiornamento Vetrina non riuscito; restano visibili le proposte precedenti.")
 
     products = product_dedup.unique(st.session_state.get("offerte_vetrina", []))
     if products:
@@ -313,10 +398,19 @@ elif active_tab == "vetrina":
         ui_components.render_price_notice()
         for index, product in enumerate(products):
             ui_components.render_product_card(product, eager_image=index == 0)
-        st.button(f"Aggiorna altre {app_constants.DISPLAY_BATCH_SIZE} proposte", key="showcase_more", on_click=_open_vetrina, use_container_width=True)
+        st.button(
+            f"Aggiorna altre {app_constants.DISPLAY_BATCH_SIZE} proposte",
+            key="showcase_more",
+            on_click=_refresh_vetrina,
+            use_container_width=True,
+        )
         ui_components.render_back_to_top()
     else:
-        st.link_button("Scopri le offerte su Amazon", amazon_gateway.build_search_link("offerte del giorno"), use_container_width=True)
+        st.link_button(
+            "Scopri le offerte su Amazon",
+            amazon_gateway.build_search_link("offerte del giorno"),
+            use_container_width=True,
+        )
 
 elif active_tab == "cerca":
     _initialize_browser_identity()
@@ -326,41 +420,71 @@ elif active_tab == "cerca":
         st.info("La ricerca si sta inizializzando. HAUL e Vetrina restano disponibili.")
     elif status.get("remaining") is not None:
         if status.get("remaining") == 0:
-            st.caption(f"Ricerche disponibili: 0 · nuova ricerca {_retry_label(status.get('retry_at', 0))}")
+            st.caption(
+                f"Ricerche disponibili: 0 · nuova ricerca {_retry_label(status.get('retry_at', 0))}"
+            )
         else:
-            st.caption(f"Ricerche disponibili nell’ultima ora: {status.get('remaining')} su {_search_limit()}")
+            st.caption(
+                f"Ricerche disponibili nell’ultima ora: {status.get('remaining')} su {_search_limit()}"
+            )
 
     col_search, col_button, col_clear = st.columns([5, 1, 1], gap="small")
     with col_search:
-        st.text_input("Prodotto", placeholder="Es. cuffie bluetooth, scarpe running, friggitrice ad aria…", label_visibility="collapsed", key="search_keyword_input")
+        st.text_input(
+            "Prodotto",
+            placeholder="Es. cuffie bluetooth, scarpe running, friggitrice ad aria…",
+            label_visibility="collapsed",
+            key="search_keyword_input",
+        )
     with col_button:
-        submitted = st.button("Cerca", key="search_submit", type="primary", use_container_width=True, disabled=not st.session_state.get("visitor_id") or status.get("remaining") == 0)
+        submitted = st.button(
+            "Cerca",
+            key="search_submit",
+            type="primary",
+            use_container_width=True,
+            disabled=not st.session_state.get("visitor_id") or status.get("remaining") == 0,
+        )
     with col_clear:
-        st.button("Cancella", key="clear_search", use_container_width=True, on_click=_clear_search)
+        st.button(
+            "Cancella",
+            key="clear_search",
+            use_container_width=True,
+            on_click=_clear_search,
+        )
 
     st.radio("Ordina per", app_constants.SORT_OPTIONS, horizontal=True, key="search_sort")
     st.checkbox("Solo prodotti Prime", key="search_prime_only")
-    st.caption("“Più venduti” usa indicatori di popolarità disponibili da Amazon; non è un conteggio esatto delle unità vendute.")
+    st.caption(
+        "“Più venduti” usa indicatori di popolarità disponibili da Amazon; non è un conteggio esatto delle unità vendute. "
+        "Una nuova ricerca o un nuovo caricamento consuma una quota; ogni pagina mostra 3 prodotti."
+    )
 
     if submitted:
         keyword = " ".join(str(st.session_state.get("search_keyword_input") or "").split())
         if not keyword:
             st.session_state["search_notice"] = "Inserisci almeno un prodotto o una categoria."
         elif _search_allowed():
-            st.session_state["last_search"] = {"keyword": keyword, "sort": str(st.session_state.get("search_sort") or app_constants.SORT_PRICE), "prime_only": bool(st.session_state.get("search_prime_only"))}
+            st.session_state["last_search"] = {
+                "keyword": keyword,
+                "sort": str(st.session_state.get("search_sort") or app_constants.SORT_PRICE),
+                "prime_only": bool(st.session_state.get("search_prime_only")),
+            }
             st.session_state["current_page"] = 1
             st.session_state["offerte"] = []
             search_feedback = st.empty()
             with search_feedback.container():
                 with st.spinner(f"Sto cercando “{keyword}” su Amazon…"):
-                    _load_search(app_constants.SEARCH_PAGE_SIZE, append=False)
+                    _load_search(app_constants.SEARCH_PREFETCH_SIZE, append=False)
             search_feedback.empty()
 
     notice = str(st.session_state.get("search_notice") or "")
     if notice:
         st.info(notice)
 
-    results = _sort_products(st.session_state.get("offerte", []), str(st.session_state.get("search_sort") or app_constants.SORT_PRICE))
+    results = _sort_products(
+        st.session_state.get("offerte", []),
+        str(st.session_state.get("search_sort") or app_constants.SORT_PRICE),
+    )
     st.session_state["offerte"] = results
     if results:
         ui_components.render_section_label(f"Risultati di ricerca · {len(results)} prodotti caricati")
@@ -391,17 +515,33 @@ elif active_tab == "cerca":
 
         status = _quota()
         can_load = len(results) < MAX_RESULTS and status.get("remaining") != 0
-        if st.button(f"Carica altri {app_constants.SEARCH_PAGE_SIZE}", key="load_more", use_container_width=True, disabled=not can_load):
+        if st.button(
+            f"Carica altri risultati · 3 per pagina (usa 1 ricerca)",
+            key="load_more",
+            use_container_width=True,
+            disabled=not can_load,
+        ):
             if _search_allowed():
                 with st.spinner("Sto cercando altri prodotti su Amazon…"):
-                    _load_search(min(app_constants.SEARCH_PAGE_SIZE, MAX_RESULTS - len(results)), append=True)
+                    _load_search(
+                        min(app_constants.SEARCH_PREFETCH_SIZE, MAX_RESULTS - len(results)),
+                        append=True,
+                    )
                 st.rerun()
         ui_components.render_back_to_top()
 
     status = _quota()
     if status.get("remaining") == 0:
-        st.info(f"Limite orario raggiunto. Potrai cercare di nuovo {_retry_label(status.get('retry_at', 0))}. I risultati già caricati restano consultabili.")
-        st.link_button("Continua su Amazon", amazon_gateway.build_search_link(str(st.session_state.get("search_keyword_input") or "offerte")), use_container_width=True)
+        st.info(
+            f"Limite orario raggiunto. Potrai cercare di nuovo {_retry_label(status.get('retry_at', 0))}. I risultati già caricati restano consultabili."
+        )
+        st.link_button(
+            "Continua su Amazon",
+            amazon_gateway.build_search_link(
+                str(st.session_state.get("search_keyword_input") or "offerte")
+            ),
+            use_container_width=True,
+        )
 
 elif active_tab == "privacy":
     st.subheader("Informativa privacy")
@@ -411,9 +551,9 @@ elif active_tab == "privacy":
 
 **Dati trattati.** Il sito usa un identificatore casuale del browser per applicare il limite orario delle ricerche e conserva sul server gli orari recenti associati a un identificatore pseudonimizzato. Non sono richiesti nome, email o account.
 
-**Finalità e base giuridica.** I dati tecnici sono usati per prevenire abusi, proteggere le risorse del servizio e mantenere preferenze locali dell’interfaccia.
+**Finalità e base giuridica.** I dati tecnici sono usati per prevenire abusi, proteggere le risorse del servizio e mantenere preferenze locali dell’interfaccia. L'identificatore locale è un limite di uso ordinario, non un sistema antifrode forte: cancellando i dati del browser può essere rigenerato; il servizio mantiene comunque un budget globale delle richieste Amazon.
 
-**Conservazione.** Gli eventi di ricerca sono eliminati automaticamente dopo 60 minuti. L’identificatore browser scade dopo 90 giorni. Telemetria e log tecnici devono essere conservati solo per il tempo necessario alla diagnostica e secondo la configurazione effettiva dell’hosting.
+**Conservazione.** Gli eventi di ricerca sono eliminati automaticamente dopo 60 minuti. L’identificatore browser scade dopo 90 giorni. La politica applicativa prevede che eventuali log tecnici diagnostici non vengano conservati oltre 30 giorni; la configurazione dell'hosting deve essere mantenuta coerente con questo limite.
 
 **Destinatari e servizi esterni.** L’applicazione è ospitata sull’infrastruttura configurata dal titolare e contiene collegamenti ad Amazon.it. Se Redis è configurato, viene usato per cache, rate limit e budget distribuito. Aprendo un collegamento Amazon, il trattamento successivo è soggetto alle informative Amazon.
 
@@ -422,9 +562,21 @@ elif active_tab == "privacy":
 **Affiliazione.** In qualità di Affiliato Amazon il titolare riceve un guadagno dagli acquisti idonei. Prezzi, disponibilità, promozioni e condizioni possono cambiare; fanno fede le informazioni mostrate su Amazon al momento dell’acquisto.
         """
     )
-    st.link_button("Contatta il titolare", "https://github.com/davimarz", use_container_width=True)
-    st.button("Torna alla Vetrina", on_click=_open_vetrina, use_container_width=True)
+    st.link_button(
+        "Contatta il titolare",
+        "https://github.com/davimarz",
+        use_container_width=True,
+    )
+    st.button(
+        "Torna alla Vetrina",
+        on_click=_set_tab,
+        args=("vetrina",),
+        use_container_width=True,
+    )
 
 ui_components.render_footer()
 with st.expander("Aggiungi alla schermata Home"):
-    st.markdown("**iPhone / Safari:** Condividi → Aggiungi alla schermata Home.  \n**Android / Chrome:** menu → Aggiungi a schermata Home.")
+    st.markdown(
+        "**iPhone / Safari:** Condividi → Aggiungi alla schermata Home.  \n"
+        "**Android / Chrome:** menu → Aggiungi a schermata Home."
+    )
