@@ -10,7 +10,9 @@ DISPLAY_BATCH_SIZE = 3
 SEARCH_PAGE_SIZE = DISPLAY_BATCH_SIZE
 # Recupera due pagine per richiesta ma continua a mostrarne 3 alla volta.
 SEARCH_PREFETCH_SIZE = DISPLAY_BATCH_SIZE * 2
-SEARCH_DETAIL_RECOVERY_LIMIT = DISPLAY_BATCH_SIZE
+# Strategia price-first: prova il recupero dettaglio per tutti i prodotti
+# prefetched, così le prime pagine hanno più probabilità di mostrare prezzi reali.
+SEARCH_DETAIL_RECOVERY_LIMIT = SEARCH_PREFETCH_SIZE
 SEARCH_COOLDOWN_SECONDS = 5
 # "Carica altri" appartiene alla stessa ricerca dell'utente: il budget Amazon
 # resta separato e continua a limitare le chiamate al provider.
@@ -21,7 +23,8 @@ LOAD_MORE_COUNTS_AS_USER_SEARCH = False
 # automaticamente dopo un'ora.
 CREATORS_PRIMARY_RETRY_SECONDS = 60 * 60
 
-CACHE_SCHEMA_VERSION = 8
+# Bump per invalidare pool/cache creati prima della strategia price-first.
+CACHE_SCHEMA_VERSION = 9
 SHOWCASE_DETAIL_CACHE_TTL = 15 * 60
 SHOWCASE_DETAIL_STALE_FOR = 60 * 60
 SHOWCASE_DETAIL_ENRICH_TIMEOUT = 7.0
