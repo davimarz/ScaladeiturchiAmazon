@@ -1,0 +1,19 @@
+{
+  "name": "Scala dei Turchi | Offerte Amazon",
+  "short_name": "Scala dei Turchi",
+  "description": "Offerte Amazon selezionate, HAUL, Vetrina e ricerca prodotti.",
+  "lang": "it-IT",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f8fc",
+  "theme_color": "#1f7fb7",
+  "icons": [
+    {
+      "src": "/app/static/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

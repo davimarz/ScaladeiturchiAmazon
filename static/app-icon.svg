@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Scala dei Turchi">
+  <rect width="512" height="512" rx="112" fill="#1f7fb7"/>
+  <path d="M96 322c62-18 105-54 137-108 31-52 65-79 109-88 20-4 44-5 74-2-50 27-79 62-98 104-22 50-55 91-99 123-37 27-78 44-123 51z" fill="#ffffff"/>
+  <path d="M118 367c77-6 139-33 187-82 27-28 48-62 63-101 16 44 15 87-3 128-21 47-58 82-111 104-43 18-88 22-136 13z" fill="#eaf5fb"/>
+  <circle cx="366" cy="150" r="34" fill="#ff9900"/>
+</svg>
