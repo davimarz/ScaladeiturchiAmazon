@@ -4,8 +4,8 @@ import html
 import math
 import urllib.parse
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -23,10 +23,9 @@ CSS = """
   --brand:#1f7fb7;--brand-dark:#075985;--brand-soft:#eaf5fb;
   --surface:#ffffff;--page:#f4f8fc;--text:#172033;--muted:#5f6f82;
   --border:#d8e6f4;--success:#047857;--warning:#c2410c;--haul:#f97316;
-  --amazon-ink:#131921;--amazon-ink-hover:#232f3e;--amazon-orange:#ff9900;--amazon-orange-dark:#e47911;
+  --amazon-ink:#131921;--amazon-ink-hover:#232f3e;--amazon-orange:#ff9900;
   --r-control:8px;--r-card:10px;--r-shell:12px;
 }
-#MainMenu, header, footer{visibility:hidden!important;height:0!important}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 .stApp{background:var(--page);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
@@ -36,14 +35,12 @@ html{scroll-behavior:smooth}
 .brand h1{margin:0!important;font-size:clamp(1.42rem,4vw,1.78rem)!important;line-height:1.08!important;color:var(--brand-dark);font-weight:800!important;letter-spacing:-.02em}
 .brand p{margin:5px 0 0!important;color:var(--muted);font-size:.82rem!important;line-height:1.35!important}
 .section-kicker{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--brand-dark);margin:7px 0 5px}
-
-div[data-testid="stHorizontalBlock"]{gap:.55rem!important}
-button[data-testid="stBaseButton-primary"]{background:var(--brand)!important;border:1px solid var(--brand)!important;color:#fff!important;box-shadow:none!important;font-weight:700!important}
-button[data-testid="stBaseButton-primary"]:hover{background:var(--brand-dark)!important;border-color:var(--brand-dark)!important}
-button[data-testid="stBaseButton-secondary"]{background:#fff!important;border:1px solid #cbd5e1!important;color:#334155!important;box-shadow:none!important;font-weight:650!important}
-button[data-testid="stBaseButton-secondary"]:hover{border-color:#7aaed0!important;background:#f8fbfe!important;color:var(--brand-dark)!important}
-.stButton>button,.stLinkButton>a{min-height:44px!important;border-radius:var(--r-control)!important;font-size:.86rem!important}
+.sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+.st-key-main_nav{position:sticky;top:.25rem;z-index:100;background:rgba(244,248,252,.96);padding:3px 0 5px;backdrop-filter:blur(7px)}
+.stButton>button,.stLinkButton>a{min-height:44px!important;border-radius:var(--r-control)!important;font-size:.86rem!important;font-weight:700!important}
 .stTextInput input{min-height:44px!important;font-size:16px!important;border-radius:var(--r-control)!important}
+button[kind="primary"]{background:var(--brand)!important;border-color:var(--brand)!important;color:#fff!important}
+button[kind="secondary"]{background:#fff!important;border-color:#cbd5e1!important;color:#334155!important}
 
 .promo{background:#fff;border:1px solid var(--border);border-left:4px solid var(--brand);border-radius:var(--r-card);padding:8px 10px;margin:6px 0 8px;font-size:.82rem;line-height:1.42;color:#334155}
 .haul-badge{display:inline-block;background:#fff4e8;color:#a84b08;border:1px solid #fed7aa;border-radius:999px;padding:2px 7px;margin-right:5px;font-size:.70rem;font-weight:800;letter-spacing:.03em}
@@ -63,26 +60,29 @@ h3.product-title,.product-title{font-size:.90rem!important;font-weight:700!impor
 .price{font-size:1.40rem!important;line-height:1.08!important;font-weight:800!important;color:var(--success)}
 .price-unavailable{font-size:.87rem!important;line-height:1.25!important;font-weight:700!important;color:#526173}
 .old{font-size:.80rem;color:#64748b;text-decoration:line-through}.discount{font-size:.79rem;font-weight:700;color:var(--warning)}
-.meta{font-size:.75rem!important;color:#526173;line-height:1.35;margin:4px 0}
+.meta{font-size:.75rem!important;color:#526173;line-height:1.35;margin:4px 0}.prime-verified{font-weight:700;color:#047857}.prime-card{font-weight:700;color:#526173}
 .trust{font-size:.73rem!important;line-height:1.35!important;color:#64748b;background:#f8fafc;border:1px solid #eef2f7;border-radius:7px;padding:5px 7px;margin-top:5px}
-.buy{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:8px 12px;background:var(--amazon-ink);color:#fff!important;text-decoration:none!important;border:1px solid var(--amazon-ink);border-radius:var(--r-control);font-family:Arial,Helvetica,sans-serif;font-size:.87rem!important;font-weight:700;letter-spacing:.005em;width:100%;margin-top:7px;box-shadow:inset 0 -3px 0 var(--amazon-orange);transition:background .14s ease,border-color .14s ease,transform .14s ease}
-.buy:hover{background:var(--amazon-ink-hover);border-color:var(--amazon-ink-hover);transform:translateY(-1px)}
-.buy .amazon-label{font-weight:700;white-space:nowrap}.buy .amazon-label strong{color:var(--amazon-orange);font-weight:800}
+.buy{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:8px 12px;background:var(--amazon-ink);color:#fff!important;text-decoration:none!important;border:1px solid var(--amazon-ink);border-radius:var(--r-control);font-family:Arial,Helvetica,sans-serif;font-size:.87rem!important;font-weight:700;width:100%;margin-top:7px;box-shadow:inset 0 -3px 0 var(--amazon-orange)}
+.buy:hover{background:var(--amazon-ink-hover)}.buy .amazon-label strong{color:var(--amazon-orange);font-weight:800}
 .buy:focus-visible,.share:focus-visible,.back-top:focus-visible{outline:3px solid var(--amazon-orange);outline-offset:2px}
 .share-details{margin-top:6px}.share-details summary{cursor:pointer;color:var(--brand-dark);font-size:.74rem;font-weight:700;list-style:none}.share-details summary::-webkit-details-marker{display:none}
-.share-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.share{min-height:44px;display:inline-flex;align-items:center;padding:6px 10px;border:1px solid #cbd5e1;border-radius:7px;color:var(--brand-dark)!important;text-decoration:none!important;background:#fff;font-size:.74rem!important}.share:hover{background:#f8fbfe;border-color:#93b8d1}
+.share-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.share{min-height:44px;display:inline-flex;align-items:center;padding:6px 10px;border:1px solid #cbd5e1;border-radius:7px;color:var(--brand-dark)!important;text-decoration:none!important;background:#fff;font-size:.74rem!important}
 .back-top{display:inline-flex;min-height:44px;align-items:center;padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:var(--brand-dark)!important;text-decoration:none!important;font-size:.76rem;font-weight:700;margin:2px 0 8px}
 .site-footer{font-size:.76rem;color:#64748b;background:#fff;border:1px solid #e2e8f0;border-radius:var(--r-card);padding:9px 11px;margin-top:10px;line-height:1.45}
 
 @media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.product-card,.buy{transition:none}.product-card:hover,.buy:hover{transform:none}}
 @media(max-width:640px){
-  .block-container{padding:.3rem .4rem 4rem}.brand{padding:9px 11px}.brand h1{font-size:1.42rem!important}.brand p{font-size:.78rem!important}
-  div[data-testid="stHorizontalBlock"]{gap:.35rem!important}.stButton>button,.stLinkButton>a{min-height:44px!important;font-size:.80rem!important;padding:.35rem .45rem!important}
-  .promo{font-size:.79rem;padding:8px 9px}.compliance{font-size:.72rem!important;padding:6px 7px}.product-card{padding:8px;border-radius:10px}
-  .product-grid{grid-template-columns:34% 66%;gap:8px}h3.product-title,.product-title{font-size:.84rem!important;line-height:1.25!important;-webkit-line-clamp:3;max-height:3.75em;margin:0 0 5px!important}
-  .price{font-size:1.22rem!important}.old,.discount{font-size:.74rem!important}.meta{font-size:.72rem!important}.trust{font-size:.72rem!important;padding:4px 6px}.buy{min-height:44px;font-size:.80rem!important;padding:7px 8px}.share{min-height:44px;font-size:.72rem!important}
+ .block-container{padding:.3rem .4rem 4rem}.brand{padding:9px 11px}.brand h1{font-size:1.42rem!important}.brand p{font-size:.78rem!important}
+ .stButton>button,.stLinkButton>a{min-height:44px!important;font-size:.80rem!important;padding:.35rem .45rem!important}
+ .promo{font-size:.79rem;padding:8px 9px}.compliance{font-size:.72rem!important;padding:6px 7px}.product-card{padding:8px;border-radius:10px;box-shadow:0 1px 5px rgba(15,23,42,.04)}
+ .product-card:hover{transform:none;box-shadow:0 1px 5px rgba(15,23,42,.04)}
+ .product-grid{grid-template-columns:34% 66%;gap:8px}h3.product-title,.product-title{font-size:.84rem!important;line-height:1.25!important;-webkit-line-clamp:3;max-height:3.75em;margin:0 0 5px!important}
+ .price{font-size:1.22rem!important}.old,.discount{font-size:.74rem!important}.meta{font-size:.72rem!important}.trust{font-size:.72rem!important;padding:4px 6px}.buy{min-height:44px;font-size:.80rem!important;padding:7px 8px}.share{min-height:44px;font-size:.72rem!important}
 }
-@media(max-width:420px){.product-grid{grid-template-columns:32% 68%;gap:7px}h3.product-title,.product-title{font-size:.82rem!important}.price{font-size:1.18rem!important}}
+@media(max-width:430px){
+ .product-grid{grid-template-columns:32% 68%;gap:7px}h3.product-title,.product-title{font-size:.82rem!important}.price{font-size:1.18rem!important}
+ .st-key-search_controls div[data-testid="stHorizontalBlock"]{flex-wrap:wrap}.st-key-search_controls div[data-testid="column"]:first-child{flex-basis:100%!important;width:100%!important}.st-key-search_controls div[data-testid="column"]:not(:first-child){flex:1 1 calc(50% - .25rem)!important;width:auto!important}
+}
 </style>
 """
 
@@ -132,22 +132,19 @@ def _image_candidates(product: dict) -> list[str]:
         clean = _image_url(str(value or ""))
         if clean and clean not in result:
             result.append(clean)
-    return result[:4]
+    return result[:2]
 
 
 def _image_markup(product: dict, link: str, title: str, eager_image: bool) -> str:
     candidates = _image_candidates(product)
     if not candidates:
         return "<div class='product-placeholder' role='img' aria-label='Immagine non disponibile'>Immagine non disponibile</div>"
-
     image = candidates[0]
     loading = "eager" if eager_image else "lazy"
     priority = "high" if eager_image else "auto"
     return (
-        f"<a class='product-image-link' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored' "
-        f"aria-label='Apri {html.escape(title, quote=True)} su Amazon'>"
-        f"<img class='product-image' src='{html.escape(image, quote=True)}' alt='{html.escape(title, quote=True)}' "
-        f"loading='{loading}' fetchpriority='{priority}' decoding='async' width='198' height='198'>"
+        f"<a class='product-image-link' href='{html.escape(link, quote=True)}' target='_blank' rel='noopener noreferrer sponsored' aria-label='Apri {html.escape(title, quote=True)} su Amazon'>"
+        f"<img class='product-image' src='{html.escape(image, quote=True)}' alt='{html.escape(title, quote=True)}' loading='{loading}' fetchpriority='{priority}' decoding='async' width='198' height='198'>"
         "</a>"
     )
 
@@ -169,10 +166,13 @@ def _share_urls(title: str, link: str, price: float | None) -> dict[str, str]:
 
 
 def render_brand() -> None:
-    st.markdown(
-        "<div id='top-anchor'></div><div class='brand'><h1>Scala dei Turchi</h1><p>Offerte Amazon selezionate e ricerca prodotti</p></div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("<div id='top-anchor'></div><div class='brand'><h1>Scala dei Turchi</h1><p>Offerte Amazon selezionate e ricerca prodotti</p></div>", unsafe_allow_html=True)
+
+
+def render_nav_accessibility(active_tab: str) -> None:
+    labels = {"haul": "HAUL", "vetrina": "Vetrina", "cerca": "Cerca", "privacy": "Privacy"}
+    label = labels.get(active_tab, active_tab)
+    st.markdown(f"<span class='sr-only' aria-current='page'>Sezione attiva: {html.escape(label)}</span>", unsafe_allow_html=True)
 
 
 def render_section_label(text: str) -> None:
@@ -180,12 +180,7 @@ def render_section_label(text: str) -> None:
 
 
 def render_price_notice() -> None:
-    st.markdown(
-        "<div class='compliance'><details><summary>Informazioni su prezzi e disponibilità</summary><div style='margin-top:4px'>"
-        + html.escape(PRICE_DISCLAIMER)
-        + " Alcuni contenuti di prodotto provengono da Amazon.</div></details></div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("<div class='compliance'><details><summary>Informazioni su prezzi e disponibilità</summary><div style='margin-top:4px'>" + html.escape(PRICE_DISCLAIMER) + " Alcuni contenuti di prodotto provengono da Amazon.</div></details></div>", unsafe_allow_html=True)
 
 
 def _format_timestamp(value: object) -> str:
@@ -221,12 +216,11 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     fetched_label = _format_timestamp(product.get("_fetched_at"))
     price_label = _format_timestamp(product.get("price_verified_at"))
 
-    price_html = "<div class='price-row'><span class='price-unavailable'>Prezzo non disponibile nell’app · verifica su Amazon</span></div>"
+    price_html = "<div class='price-row'><span class='price-unavailable'>Prezzo su Amazon</span></div>"
     if final_price is not None:
         parts = [f"<span class='price'>€{_format_eur(final_price)}</span>"]
         if old_price is not None and old_price > final_price:
             parts.append(f"<span class='old'>€{_format_eur(old_price)}</span>")
-            parts.append(f"<span class='discount'>Risparmi €{_format_eur(old_price-final_price)}</span>")
         discount = str(product.get("sconto") or "").strip()
         if discount:
             parts.append(f"<span class='discount'>{html.escape(discount)}</span>")
@@ -245,25 +239,26 @@ def render_product_card(product: dict, eager_image: bool = False) -> None:
     elif product.get("sales_rank"):
         optional_meta.append("Popolarità Amazon disponibile")
 
+    prime_html = ""
+    if product.get("prime") or product.get("is_prime"):
+        if product.get("prime_detail_verified"):
+            prime_html = "<span class='prime-verified'>Prime verificato</span>"
+        else:
+            prime_html = "<span class='prime-card'>Prime rilevato</span>"
+
     share = _share_urls(title, link, final_price)
     image_html = _image_markup(product, link, title, eager_image)
-
-    meta_html = ""
+    meta_parts = []
     if optional_meta:
-        meta_html = "<div class='meta'>" + html.escape(" · ".join(optional_meta)) + "</div>"
+        meta_parts.append(html.escape(" · ".join(optional_meta)))
+    if prime_html:
+        meta_parts.append(prime_html)
+    meta_html = "<div class='meta'>" + " · ".join(meta_parts) + "</div>" if meta_parts else ""
 
     if final_price is not None:
-        trust_text = (
-            f"Prezzo verificato {price_label} · può cambiare su Amazon."
-            if price_label
-            else "Prezzo verificato su Amazon · può cambiare."
-        )
+        trust_text = f"Prezzo verificato {price_label} · può cambiare su Amazon." if price_label else "Prezzo rilevato da Amazon · può cambiare."
     else:
-        trust_text = (
-            f"Dati prodotto recuperati {fetched_label} · controlla prezzo e disponibilità su Amazon."
-            if fetched_label
-            else "Controlla prezzo e disponibilità su Amazon."
-        )
+        trust_text = f"Dati prodotto recuperati {fetched_label} · verifica su Amazon." if fetched_label else "Controlla prezzo e disponibilità su Amazon."
 
     card = (
         "<article class='product-card'>"
