@@ -132,8 +132,8 @@ def test_showcase_pool_uses_one_direct_fetch(monkeypatch):
         return [_product(i) for i in range(item_count)]
 
     monkeypatch.setattr(
-        catalog_service.amazon_html,
-        "fetch_showcase_products_fast",
+        catalog_service.showcase_parser,
+        "fetch_products",
         fake_fetch,
     )
     products = catalog_service._showcase_pool("tag-21")
