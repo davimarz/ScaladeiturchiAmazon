@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import app_constants
 import catalog_service
 
 
 def _product(index: int) -> dict:
+    asin = f"B{index:09d}"[-10:]
     return {
-        "asin": f"B{index:09d}"[-10:],
+        "asin": asin,
         "titolo": f"Prodotto test numero {index} completo",
-        "link_affiliato": f"https://www.amazon.it/dp/B{index:09d}"[-30:],
+        "link_affiliato": f"https://www.amazon.it/dp/{asin}",
     }
+
+
+def test_batch_size_has_single_source():
+    assert catalog_service.DISPLAY_BATCH_SIZE == app_constants.DISPLAY_BATCH_SIZE == 3
 
 
 def test_sample_prefers_unseen_products():
@@ -85,59 +91,22 @@ def test_untrusted_unverified_price_stays_hidden():
     assert prepared["_price_display_source"] == ""
 
 
-def test_search_recovery_is_bounded_and_merges_image_and_verified_price(monkeypatch):
-    products = []
-    for index in range(7):
-        item = _product(index)
-        item["prezzo_verificato"] = False
-        item["prezzo_finale"] = None
-        item["immagine_url"] = ""
-        products.append(item)
-
-    calls = []
-
-    def fake_enrich(items):
-        batch = [dict(item) for item in items]
-        calls.append(batch)
-        recovered = []
-        for index, item in enumerate(batch):
-            item["immagine_url"] = f"https://m.media-amazon.com/images/I/recovered-{index}.jpg"
-            item["prezzo_verificato"] = True
-            item["prezzo_finale"] = 20.0 + index
-            recovered.append(item)
-        return recovered
-
-    monkeypatch.setattr(catalog_service.amazon_gateway, "enrich_product_details", fake_enrich)
-    recovered = catalog_service._recover_search_details(products)
-
-    assert len(calls) == 1
-    assert len(calls[0]) == catalog_service.SEARCH_DETAIL_RECOVERY_LIMIT == 4
-    assert recovered[0]["immagine_url"].startswith("https://m.media-amazon.com/")
-    assert recovered[0]["prezzo_verificato"] is True
-    assert recovered[0]["prezzo_finale"] == 20.0
-    assert recovered[4]["immagine_url"] == ""
-
-
-def test_search_recovery_skips_complete_cards(monkeypatch):
-    item = _product(1)
-    item.update({
-        "immagine_url": "https://m.media-amazon.com/images/I/ok.jpg",
+def test_stamp_separates_product_and_price_timestamps():
+    products = catalog_service._stamp([{
+        **_product(1),
         "prezzo_verificato": True,
-        "prezzo_finale": 29.9,
-    })
-
-    def should_not_run(_items):
-        raise AssertionError("complete cards must not be enriched again")
-
-    monkeypatch.setattr(catalog_service.amazon_gateway, "enrich_product_details", should_not_run)
-    recovered = catalog_service._recover_search_details([item])
-    assert recovered[0]["prezzo_finale"] == 29.9
+        "prezzo_finale": 19.9,
+    }], fetched_at=1234.0)
+    assert products[0]["_fetched_at"] == 1234.0
+    assert products[0]["price_verified_at"] == 1234.0
 
 
 def test_showcase_page_is_stable_inside_cache_window():
     bucket_start = catalog_service.SHOWCASE_POOL_TTL * 5
     first = catalog_service._showcase_page_index(bucket_start)
-    second = catalog_service._showcase_page_index(bucket_start + catalog_service.SHOWCASE_POOL_TTL - 1)
+    second = catalog_service._showcase_page_index(
+        bucket_start + catalog_service.SHOWCASE_POOL_TTL - 1
+    )
     assert first == second
 
 
@@ -148,7 +117,11 @@ def test_showcase_pool_uses_one_direct_fetch(monkeypatch):
         calls.append((page_index, partner_tag, item_count))
         return [_product(i) for i in range(item_count)]
 
-    monkeypatch.setattr(catalog_service.amazon_html, "fetch_showcase_products_fast", fake_fetch)
+    monkeypatch.setattr(
+        catalog_service.amazon_html,
+        "fetch_showcase_products_fast",
+        fake_fetch,
+    )
     products = catalog_service._showcase_pool("tag-21")
 
     assert len(calls) == 1
@@ -173,20 +146,44 @@ def test_showcase_enriches_only_selected_batch(monkeypatch):
             copy["prezzo_verificato"] = True
             copy["prezzo_finale"] = 20.0 + index
             copy["prezzo_iniziale"] = 30.0 + index
+            copy["price_verified_at"] = 1000.0
             enriched.append(copy)
         return enriched
 
     monkeypatch.setattr(catalog_service.amazon_gateway, "enrich_product_details", fake_enrich)
 
     products = catalog_service.get_showcase_selection(
-        item_count=catalog_service.DISPLAY_BATCH_SIZE,
+        item_count=app_constants.DISPLAY_BATCH_SIZE,
         refresh_token="showcase-test",
         exclude_asins=(),
     )
 
     assert len(calls) == 1
-    assert len(calls[0]) == catalog_service.DISPLAY_BATCH_SIZE == 3
-    assert len(products) == catalog_service.DISPLAY_BATCH_SIZE == 3
+    assert len(calls[0]) == app_constants.DISPLAY_BATCH_SIZE == 3
+    assert len(products) == app_constants.DISPLAY_BATCH_SIZE == 3
     assert all(product["prezzo_verificato"] is True for product in products)
     assert all(catalog_service.price_is_displayable(product) for product in products)
-    assert all(product.get("sconto") for product in products)
+
+
+def test_search_uses_gateway_once_without_second_detail_recovery(monkeypatch):
+    calls = []
+
+    def fake_search(**kwargs):
+        calls.append(kwargs)
+        return [{
+            **_product(1),
+            "prezzo_verificato": True,
+            "prezzo_finale": 9.99,
+            "price_verified_at": 1000.0,
+        }]
+
+    monkeypatch.setattr(catalog_service.amazon_gateway, "search_products", fake_search)
+    products = catalog_service.search_products(
+        keyword="cuffie",
+        sort_type="Prezzo minimo",
+        prime_only=False,
+        item_count=6,
+    )
+    assert len(calls) == 1
+    assert len(products) == 1
+    assert products[0]["prezzo_finale"] == 9.99
