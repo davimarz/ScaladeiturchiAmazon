@@ -70,12 +70,16 @@ h3.product-title,.product-title{font-size:.90rem!important;font-weight:700!impor
 .back-top{display:inline-flex;min-height:44px;align-items:center;padding:7px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:var(--brand-dark)!important;text-decoration:none!important;font-size:.76rem;font-weight:700;margin:2px 0 8px}
 .site-footer{font-size:.76rem;color:#64748b;background:#fff;border:1px solid #e2e8f0;border-radius:var(--r-card);padding:9px 11px;margin-top:10px;line-height:1.45}
 
-@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.product-card,.buy{transition:none}.product-card:hover,.buy:hover{transform:none}}
+@keyframes card-loading-pulse{0%,100%{background-color:#fff}50%{background-color:#f8fbfe}}
+.stSpinner{min-height:86px!important;border:1px solid var(--border)!important;border-radius:var(--r-card)!important;background:#fff!important;padding:12px 14px!important;margin:0 0 9px!important;display:flex!important;align-items:center!important;animation:card-loading-pulse 1.25s ease-in-out infinite}
+
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}.product-card,.buy{transition:none}.product-card:hover,.buy:hover{transform:none}.stSpinner{animation:none}}
 @media(max-width:640px){
  .block-container{padding:.3rem .4rem 4rem}.brand{padding:9px 11px}.brand h1{font-size:1.42rem!important}.brand p{font-size:.78rem!important}
  .stButton>button,.stLinkButton>a{min-height:44px!important;font-size:.80rem!important;padding:.35rem .45rem!important}
- .promo{font-size:.79rem;padding:8px 9px}.compliance{font-size:.72rem!important;padding:6px 7px}.product-card{padding:8px;border-radius:10px;box-shadow:0 1px 5px rgba(15,23,42,.04)}
- .product-card:hover{transform:none;box-shadow:0 1px 5px rgba(15,23,42,.04)}
+ .promo{font-size:.79rem;padding:8px 9px}.compliance{font-size:.72rem!important;padding:6px 7px}.product-card{padding:8px;border-radius:10px;box-shadow:none}
+ .product-card:hover{transform:none;box-shadow:none;border-color:var(--border)}
+ .stSpinner{min-height:76px!important;box-shadow:none!important;padding:10px!important}
  .product-grid{grid-template-columns:34% 66%;gap:8px}h3.product-title,.product-title{font-size:.84rem!important;line-height:1.25!important;-webkit-line-clamp:3;max-height:3.75em;margin:0 0 5px!important}
  .price{font-size:1.22rem!important}.old,.discount{font-size:.74rem!important}.meta{font-size:.72rem!important}.trust{font-size:.72rem!important;padding:4px 6px}.buy{min-height:44px;font-size:.80rem!important;padding:7px 8px}.share{min-height:44px;font-size:.72rem!important}
 }
