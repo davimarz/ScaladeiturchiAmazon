@@ -350,7 +350,11 @@ elif active_tab == "cerca":
             st.session_state["last_search"] = {"keyword": keyword, "sort": str(st.session_state.get("search_sort") or app_constants.SORT_PRICE), "prime_only": bool(st.session_state.get("search_prime_only"))}
             st.session_state["current_page"] = 1
             st.session_state["offerte"] = []
-            _load_search(app_constants.SEARCH_PAGE_SIZE, append=False)
+            search_feedback = st.empty()
+            with search_feedback.container():
+                with st.spinner(f"Sto cercando “{keyword}” su Amazon…"):
+                    _load_search(app_constants.SEARCH_PAGE_SIZE, append=False)
+            search_feedback.empty()
 
     notice = str(st.session_state.get("search_notice") or "")
     if notice:
@@ -389,7 +393,8 @@ elif active_tab == "cerca":
         can_load = len(results) < MAX_RESULTS and status.get("remaining") != 0
         if st.button(f"Carica altri {app_constants.SEARCH_PAGE_SIZE}", key="load_more", use_container_width=True, disabled=not can_load):
             if _search_allowed():
-                _load_search(min(app_constants.SEARCH_PAGE_SIZE, MAX_RESULTS - len(results)), append=True)
+                with st.spinner("Sto cercando altri prodotti su Amazon…"):
+                    _load_search(min(app_constants.SEARCH_PAGE_SIZE, MAX_RESULTS - len(results)), append=True)
                 st.rerun()
         ui_components.render_back_to_top()
 
