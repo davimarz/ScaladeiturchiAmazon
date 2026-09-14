@@ -69,6 +69,14 @@ def test_css_keeps_mobile_touch_targets_reduced_motion_and_sticky_nav():
     assert "@media(max-width:430px)" in ui_components.CSS
 
 
+def test_main_navigation_stays_in_one_horizontal_row_on_mobile():
+    assert '.st-key-main_nav div[data-testid="stHorizontalBlock"]{display:flex!important;flex-wrap:nowrap!important' in ui_components.CSS
+    assert '.st-key-main_nav div[data-testid="column"]{flex:1 1 0!important;min-width:0!important;width:33.333%!important}' in ui_components.CSS
+    assert '.st-key-main_nav .stButton>button{width:100%!important;white-space:nowrap!important' in ui_components.CSS
+    assert '@media(max-width:430px)' in ui_components.CSS
+    assert 'flex-direction:row!important;flex-wrap:nowrap!important' in ui_components.CSS
+
+
 def test_p3_mobile_polish_uses_standard_weights_and_card_area_spinner():
     assert "font-weight:650" not in ui_components.CSS
     assert ".stSpinner{min-height:86px" in ui_components.CSS
