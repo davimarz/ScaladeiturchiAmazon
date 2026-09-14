@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -7,22 +8,35 @@ from collections import defaultdict
 from contextlib import contextmanager
 from typing import Iterator
 
+import app_constants
+
 LOGGER = logging.getLogger("amazon_affiliate.metrics")
 _LOCK = threading.RLock()
 _COUNTERS: dict[str, int] = defaultdict(int)
 _TIMINGS: dict[str, list[float]] = defaultdict(list)
 _VALUES: dict[str, list[float]] = defaultdict(list)
 _MAX_SAMPLES = 300
+_EVENT_COUNT = 0
+
+
+def _maybe_log_snapshot() -> None:
+    global _EVENT_COUNT
+    _EVENT_COUNT += 1
+    every = max(1, int(app_constants.TELEMETRY_LOG_EVERY_EVENTS))
+    if _EVENT_COUNT % every == 0:
+        LOGGER.info(
+            json.dumps(
+                {"event": "metrics_snapshot", **snapshot()},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
 
 
 def increment(name: str, amount: int = 1) -> None:
     with _LOCK:
         _COUNTERS[str(name)] += int(amount)
-
-
-def counter_value(name: str) -> int:
-    with _LOCK:
-        return int(_COUNTERS.get(str(name), 0))
+        _maybe_log_snapshot()
 
 
 def _append(bucket: dict[str, list[float]], name: str, value: float) -> None:
@@ -35,11 +49,13 @@ def _append(bucket: dict[str, list[float]], name: str, value: float) -> None:
 def observe(name: str, seconds: float) -> None:
     with _LOCK:
         _append(_TIMINGS, name, max(0.0, float(seconds)))
+        _maybe_log_snapshot()
 
 
 def observe_value(name: str, value: float) -> None:
     with _LOCK:
         _append(_VALUES, name, float(value))
+        _maybe_log_snapshot()
 
 
 @contextmanager
@@ -84,4 +100,10 @@ def snapshot() -> dict:
 
 
 def log_snapshot() -> None:
-    LOGGER.info("metrics=%s", snapshot())
+    LOGGER.info(
+        json.dumps(
+            {"event": "metrics_snapshot", **snapshot()},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
