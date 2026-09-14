@@ -157,7 +157,7 @@ def test_showcase_pool_uses_one_direct_fetch(monkeypatch):
     assert len(products) == 12
 
 
-def test_showcase_enriches_only_selected_four(monkeypatch):
+def test_showcase_enriches_only_selected_batch(monkeypatch):
     pool = [_product(i) for i in range(12)]
     calls = []
 
@@ -179,14 +179,14 @@ def test_showcase_enriches_only_selected_four(monkeypatch):
     monkeypatch.setattr(catalog_service.amazon_gateway, "enrich_product_details", fake_enrich)
 
     products = catalog_service.get_showcase_selection(
-        item_count=4,
+        item_count=catalog_service.DISPLAY_BATCH_SIZE,
         refresh_token="showcase-test",
         exclude_asins=(),
     )
 
     assert len(calls) == 1
-    assert len(calls[0]) == 4
-    assert len(products) == 4
+    assert len(calls[0]) == catalog_service.DISPLAY_BATCH_SIZE == 3
+    assert len(products) == catalog_service.DISPLAY_BATCH_SIZE == 3
     assert all(product["prezzo_verificato"] is True for product in products)
     assert all(catalog_service.price_is_displayable(product) for product in products)
     assert all(product.get("sconto") for product in products)
