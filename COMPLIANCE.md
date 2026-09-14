@@ -1,57 +1,52 @@
 # Compliance checklist
 
-This file is an engineering checklist, not legal advice or legal certification.
+Questo file è una checklist tecnica e non costituisce consulenza o certificazione legale.
 
 ## Amazon Associates
 
-Review the current Amazon.it Associates Operating Agreement and Program Policies before each production release:
+Prima di ogni release di produzione verificare le condizioni correnti del Programma Affiliazione Amazon.it.
 
-- https://programma-affiliazione.amazon.it/help/operating/agreement
-- https://programma-affiliazione.amazon.it/help/operating/policies
+Salvaguardie applicative:
 
-Current implementation safeguards:
+- disclosure affiliato sempre visibile nel footer;
+- link Amazon HTTPS con Partner Tag e `rel="sponsored"`;
+- prezzi mostrati solo da segnali Amazon espliciti e ancora freschi;
+- `price_verified_at` è distinto dal semplice timestamp della scheda;
+- prezzo precedente e sconto non vengono inventati;
+- prezzi non affidabili/scaduti non vengono mostrati come correnti;
+- Creators API resta il percorso primary-first;
+- dopo `AssociateNotEligible` il fallback è temporaneo e il primary viene ritentato dopo 60 minuti;
+- il fallback non elimina credenziali né Partner Tag;
+- “Più venduti” resta descritto come indicatore di popolarità, non conteggio esatto delle vendite.
 
-- the affiliate disclosure remains visible in the footer;
-- price cards show an update timestamp;
-- a price/availability change disclaimer is shown near product listings;
-- the interface no longer hard-codes HAUL discount percentages or shipping thresholds as permanent facts;
-- affiliate links point to Amazon.it, use HTTPS and carry `rel="sponsored"`;
-- missing/unverified prices are shown as “Prezzo da verificare su Amazon” instead of being inferred;
-- “Più venduti” is described as a popularity indicator and not as an exact sales count.
+### Fallback HTML
 
-### Product content source
-
-Creators API is the preferred source in `amazon_api.py`. Legacy HTML fallback remains isolated for resilience and HAUL discovery. Because Amazon can change both technical access rules and contractual requirements, the deployment owner must verify that each enabled fallback is permitted for the account and intended use. Disable non-authorized fallback modes in production if required by the current Program Policies.
+I fallback HTML sono isolati dietro boundary dedicati (`http_client.py`, `haul_parser.py`, `showcase_parser.py`, `amazon_html.py`). Il titolare deve verificare periodicamente che ogni modalità abilitata sia compatibile con le policy applicabili al proprio account. Se necessario usare `data_source_mode="api_only"`.
 
 ## GDPR / privacy
 
-Engineering controls included in this revision:
+Controlli implementati:
 
-- no account, name or email is required for ordinary searches;
-- the browser identifier is random and expires after 90 days;
-- the server stores a SHA-256 hash of the identifier rather than the raw UUID;
-- search-event rows older than 60 minutes are removed by the rolling limiter;
-- the privacy page documents purpose, retention, recipients, rights and affiliate behavior;
-- browser messaging validates the parent window and targets the parent origin derived from the embedding page when available.
+- nessun account, nome o email richiesti per le ricerche ordinarie;
+- identificatore browser casuale con scadenza 90 giorni;
+- possibilità per l’utente di rigenerare l’identificatore dalla pagina Privacy;
+- pseudonimizzazione HMAC-SHA256 quando `VISITOR_HASH_SECRET` è configurato, SHA-256 come fallback;
+- eventi del limite ricerche eliminati dopo 60 minuti;
+- nuovi log diagnostici non includono intenzionalmente il termine di ricerca;
+- componenti browser con CSP restrittiva e `postMessage` verso origin verificata;
+- Redis è opzionale e non è requisito per la singola istanza.
 
-The deployment owner must still verify:
-
-- the real hosting provider and subprocessors;
-- actual server-log retention;
-- a valid privacy contact channel;
-- any analytics/cookie tools added outside this repository;
-- international transfers, if any;
-- whether a cookie/consent banner becomes necessary after adding optional tracking technologies.
+Il titolare deve comunque verificare hosting, subprocessori, retention reale dei log, contatto privacy e trasferimenti internazionali.
 
 ## Release review
 
-Before deploying:
-
-1. Run `python -m compileall -q .` and `pytest -q`.
-2. Verify the Amazon affiliate tag on rendered links.
-3. Verify price timestamps and disclaimer visibility on desktop and mobile.
-4. Test HAUL refresh repeatedly and confirm new ASINs are preferred until the pool is exhausted.
-5. Test keyboard focus, 200% zoom and small-screen layout.
-6. Confirm secrets are absent from git history and logs.
-7. Confirm Redis is configured if more than one application instance is running.
-8. Re-check the current Amazon Program Policies for material changes.
+1. `python -m compileall -q .`
+2. `ruff check --select E9,F63,F7,F82 .`
+3. `mypy app_constants.py product_models.py redis_client.py services.py`
+4. `pytest -q -m "not e2e"`
+5. verificare Partner Tag su link HAUL, Vetrina e Cerca;
+6. verificare prezzi/timestamp/disclaimer su desktop e mobile;
+7. testare tastiera e zoom 200%/400%;
+8. controllare assenza di segreti in Git e log;
+9. verificare ruleset `main` e deploy key read-only;
+10. ricontrollare le policy Amazon correnti.
