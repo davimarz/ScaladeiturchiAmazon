@@ -49,8 +49,11 @@ jobs:
       - name: Verify dependency lock
         if: matrix.python-version == '3.12'
         run: |
-          pip-compile --quiet --strip-extras --output-file /tmp/requirements-lock.txt requirements.txt
-          diff -u requirements-lock.txt /tmp/requirements-lock.txt
+          python -m venv /tmp/runtime-lock
+          /tmp/runtime-lock/bin/python -m pip install --quiet --upgrade pip
+          /tmp/runtime-lock/bin/python -m pip install --quiet -r requirements.txt
+          /tmp/runtime-lock/bin/python -m pip freeze > /tmp/runtime-resolved.txt
+          python scripts/check_runtime_lock.py requirements-lock.txt /tmp/runtime-resolved.txt
       - name: Compile
         run: python -m compileall -q .
       - name: Ruff static checks
