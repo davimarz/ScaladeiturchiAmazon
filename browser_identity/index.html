@@ -1,19 +1,34 @@
 <!doctype html>
 <html lang="it">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+</head>
 <body>
 <script>
 const KEY='amazon_visitor_v2';
 const TTL_MS=90*24*60*60*1000;
 function parentOrigin(){
-  try{return document.referrer?new URL(document.referrer).origin:'*';}catch(e){return '*';}
+  try{
+    if(document.referrer)return new URL(document.referrer).origin;
+    if(location.ancestorOrigins&&location.ancestorOrigins.length)return location.ancestorOrigins[0];
+  }catch(e){}
+  return '';
 }
 function send(type,extra={}){
-  window.parent.postMessage({isStreamlitMessage:true,type,...extra},parentOrigin());
+  const origin=parentOrigin();
+  if(!origin)return;
+  window.parent.postMessage({isStreamlitMessage:true,type,...extra},origin);
 }
-function getIdentity(){
+function resetIdentity(){
+  try{localStorage.removeItem(KEY);}catch(e){}
+  try{sessionStorage.removeItem(KEY);}catch(e){}
+}
+function getIdentity(reset=false){
   const now=Date.now();
   try{
+    if(reset)resetIdentity();
     const raw=localStorage.getItem(KEY);
     if(raw){
       const parsed=JSON.parse(raw);
@@ -25,12 +40,18 @@ function getIdentity(){
     localStorage.setItem(KEY,JSON.stringify({id,created:now}));
     return id;
   }catch(e){
-    return null;
+    try{
+      const existing=sessionStorage.getItem(KEY);
+      if(existing&&!reset)return existing;
+      const id=crypto.randomUUID();sessionStorage.setItem(KEY,id);return id;
+    }catch(inner){return null;}
   }
 }
 window.addEventListener('message',event=>{
-  if(event.source!==window.parent||event.data?.type!=='streamlit:render')return;
-  const id=getIdentity();
+  const origin=parentOrigin();
+  if(!origin||event.source!==window.parent||event.origin!==origin||event.data?.type!=='streamlit:render')return;
+  const reset=Boolean(event.data?.args?.reset_identity);
+  const id=getIdentity(reset);
   send('streamlit:setComponentValue',{value:id,dataType:'json'});
 });
 send('streamlit:componentReady',{apiVersion:1});
