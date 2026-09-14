@@ -37,6 +37,10 @@ html{scroll-behavior:smooth}
 .section-kicker{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--brand-dark);margin:7px 0 5px}
 .sr-only{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
 .st-key-main_nav{position:sticky;top:.25rem;z-index:100;background:rgba(244,248,252,.96);padding:3px 0 5px;backdrop-filter:blur(7px)}
+.st-key-main_nav div[data-testid="stHorizontalBlock"]{display:flex!important;flex-wrap:nowrap!important;gap:.35rem!important;align-items:stretch!important}
+.st-key-main_nav div[data-testid="column"]{flex:1 1 0!important;min-width:0!important;width:33.333%!important}
+.st-key-main_nav .stButton{width:100%!important}
+.st-key-main_nav .stButton>button{width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
 .stButton>button,.stLinkButton>a{min-height:44px!important;border-radius:var(--r-control)!important;font-size:.86rem!important;font-weight:700!important}
 .stTextInput input{min-height:44px!important;font-size:16px!important;border-radius:var(--r-control)!important}
 button[kind="primary"]{background:var(--brand)!important;border-color:var(--brand)!important;color:#fff!important}
@@ -77,6 +81,7 @@ h3.product-title,.product-title{font-size:.90rem!important;font-weight:700!impor
 @media(max-width:640px){
  .block-container{padding:.3rem .4rem 4rem}.brand{padding:9px 11px}.brand h1{font-size:1.42rem!important}.brand p{font-size:.78rem!important}
  .stButton>button,.stLinkButton>a{min-height:44px!important;font-size:.80rem!important;padding:.35rem .45rem!important}
+ .st-key-main_nav{padding:2px 0 4px}.st-key-main_nav div[data-testid="stHorizontalBlock"]{gap:.25rem!important}.st-key-main_nav .stButton>button{font-size:.78rem!important;padding:.3rem .25rem!important;min-height:42px!important}
  .promo{font-size:.79rem;padding:8px 9px}.compliance{font-size:.72rem!important;padding:6px 7px}.product-card{padding:8px;border-radius:10px;box-shadow:none}
  .product-card:hover{transform:none;box-shadow:none;border-color:var(--border)}
  .stSpinner{min-height:76px!important;box-shadow:none!important;padding:10px!important}
@@ -85,6 +90,7 @@ h3.product-title,.product-title{font-size:.90rem!important;font-weight:700!impor
 }
 @media(max-width:430px){
  .product-grid{grid-template-columns:32% 68%;gap:7px}h3.product-title,.product-title{font-size:.82rem!important}.price{font-size:1.18rem!important}
+ .st-key-main_nav div[data-testid="stHorizontalBlock"]{flex-direction:row!important;flex-wrap:nowrap!important}.st-key-main_nav div[data-testid="column"]{flex:1 1 0!important;min-width:0!important;width:33.333%!important}.st-key-main_nav .stButton>button{font-size:.75rem!important;padding:.25rem .15rem!important}
  .st-key-search_controls div[data-testid="stHorizontalBlock"]{flex-wrap:wrap}.st-key-search_controls div[data-testid="column"]:first-child{flex-basis:100%!important;width:100%!important}.st-key-search_controls div[data-testid="column"]:not(:first-child){flex:1 1 calc(50% - .25rem)!important;width:auto!important}
 }
 </style>
