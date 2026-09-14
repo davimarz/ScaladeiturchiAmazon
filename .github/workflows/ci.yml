@@ -43,8 +43,14 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-lock.txt
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
+      - name: Verify dependency lock
+        if: matrix.python-version == '3.12'
+        run: |
+          pip-compile --quiet --strip-extras --output-file /tmp/requirements-lock.txt requirements.txt
+          diff -u requirements-lock.txt /tmp/requirements-lock.txt
       - name: Compile
         run: python -m compileall -q .
       - name: Ruff static checks
@@ -57,7 +63,7 @@ jobs:
         run: pytest -q -m "not e2e"
       - name: Dependency audit
         if: matrix.python-version == '3.12'
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r requirements-lock.txt
       - name: Secret scan
         if: matrix.python-version == '3.12'
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
@@ -80,6 +86,7 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-lock.txt
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
       - name: Install Chromium
