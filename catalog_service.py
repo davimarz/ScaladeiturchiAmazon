@@ -119,6 +119,14 @@ def _sample_fresh(
     return selected[:target]
 
 
+def _http_counter() -> int:
+    return telemetry.counter_value("amazon_http_requests")
+
+
+def _observe_http_delta(metric: str, before: int) -> None:
+    telemetry.observe_value(metric, max(0, _http_counter() - before))
+
+
 def _haul_pool(partner_tag: str) -> list[Product]:
     products = amazon_gateway.fetch_haul_products(partner_tag)
     products = _stamp(products)
@@ -133,20 +141,24 @@ def get_haul_selection(
     refresh_token: str | None = None,
     exclude_asins: Iterable[str] = (),
 ) -> list[Product]:
-    tag = amazon_gateway.get_partner_tag()
-    if not tag:
-        return []
-    target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), 10))
-    pool = shared_results.get(
-        ("haul-pool-v4", tag),
-        HAUL_POOL_TTL,
-        lambda: _haul_pool(tag),
-        retry=30,
-        stale_for=900,
-        report_failure=True,
-    )
-    token = str(refresh_token or time.time_ns())
-    return _sample_fresh(pool, target, token, exclude_asins)
+    before = _http_counter()
+    try:
+        tag = amazon_gateway.get_partner_tag()
+        if not tag:
+            return []
+        target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), 10))
+        pool = shared_results.get(
+            ("haul-pool-v4", tag),
+            HAUL_POOL_TTL,
+            lambda: _haul_pool(tag),
+            retry=30,
+            stale_for=900,
+            report_failure=True,
+        )
+        token = str(refresh_token or time.time_ns())
+        return _sample_fresh(pool, target, token, exclude_asins)
+    finally:
+        _observe_http_delta("haul_http_requests_per_interaction", before)
 
 
 def _showcase_page_index(now: float | None = None) -> int:
@@ -182,39 +194,43 @@ def get_showcase_selection(
     refresh_token: str | None = None,
     exclude_asins: Iterable[str] = (),
 ) -> list[Product]:
-    tag = amazon_gateway.get_partner_tag()
-    if not tag:
-        return []
+    before = _http_counter()
+    try:
+        tag = amazon_gateway.get_partner_tag()
+        if not tag:
+            return []
 
-    target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
-    token = str(refresh_token or time.time_ns())
+        target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
+        token = str(refresh_token or time.time_ns())
 
-    pool = shared_results.get(
-        ("showcase-pool-v7", tag),
-        SHOWCASE_POOL_TTL,
-        lambda: _showcase_pool(tag),
-        retry=60,
-        stale_for=SHOWCASE_STALE_FOR,
-        report_failure=True,
-    )
+        pool = shared_results.get(
+            ("showcase-pool-v7", tag),
+            SHOWCASE_POOL_TTL,
+            lambda: _showcase_pool(tag),
+            retry=60,
+            stale_for=SHOWCASE_STALE_FOR,
+            report_failure=True,
+        )
 
-    selected = _sample_fresh(pool, target, token, exclude_asins)
-    if not selected:
-        return []
+        selected = _sample_fresh(pool, target, token, exclude_asins)
+        if not selected:
+            return []
 
-    selected_for_detail: list[Product] = [
-        {key: value for key, value in dict(product).items() if key != "variants"}
-        for product in selected
-    ]
+        selected_for_detail: list[Product] = [
+            {key: value for key, value in dict(product).items() if key != "variants"}
+            for product in selected
+        ]
 
-    started = time.perf_counter()
-    enriched = amazon_gateway.enrich_product_details(selected_for_detail)
-    enriched = _stamp(enriched)
-    telemetry.observe("showcase_detail_enrich_seconds", time.perf_counter() - started)
-    visible = sum(1 for product in enriched if price_is_displayable(product))
-    telemetry.observe_value("showcase_detail_prices_visible", visible)
-    telemetry.observe_value("price_visible_ratio", visible / max(1, len(enriched)))
-    return enriched[:target]
+        started = time.perf_counter()
+        enriched = amazon_gateway.enrich_product_details(selected_for_detail)
+        enriched = _stamp(enriched)
+        telemetry.observe("showcase_detail_enrich_seconds", time.perf_counter() - started)
+        visible = sum(1 for product in enriched if price_is_displayable(product))
+        telemetry.observe_value("showcase_detail_prices_visible", visible)
+        telemetry.observe_value("price_visible_ratio", visible / max(1, len(enriched)))
+        return enriched[:target]
+    finally:
+        _observe_http_delta("showcase_http_requests_per_interaction", before)
 
 
 def search_products(
@@ -224,25 +240,31 @@ def search_products(
     item_count: int,
     exclude_asins: Iterable[str] = (),
 ) -> list[Product]:
-    clean = " ".join(str(keyword or "").split())
-    if not clean:
-        return []
-    # Il gateway è l'unico livello che esegue l'eventuale recovery dettaglio.
-    products = amazon_gateway.search_products(
-        keyword=clean,
-        sort_type=sort_type,
-        prime_only=bool(prime_only),
-        item_count=max(1, min(int(item_count), amazon_gateway.MAX_RESULTS)),
-        exclude_asins=tuple(
-            str(value).strip().upper()
-            for value in exclude_asins
-            if str(value).strip()
-        ),
-    )
-    stamped = _stamp(products or [])
-    visible = sum(1 for product in stamped if price_is_displayable(product))
-    telemetry.observe_value("search_price_visible_ratio", visible / max(1, len(stamped)))
-    return stamped
+    before = _http_counter()
+    try:
+        clean = " ".join(str(keyword or "").split())
+        if not clean:
+            return []
+        # Il gateway è l'unico livello che esegue l'eventuale recovery dettaglio.
+        products = amazon_gateway.search_products(
+            keyword=clean,
+            sort_type=sort_type,
+            prime_only=bool(prime_only),
+            item_count=max(1, min(int(item_count), amazon_gateway.MAX_RESULTS)),
+            exclude_asins=tuple(
+                str(value).strip().upper()
+                for value in exclude_asins
+                if str(value).strip()
+            ),
+        )
+        stamped = _stamp(products or [])
+        visible = sum(1 for product in stamped if price_is_displayable(product))
+        telemetry.observe_value("search_price_visible_ratio", visible / max(1, len(stamped)))
+        return stamped
+    finally:
+        # Conta le richieste HTML dirette e i recovery dettaglio instradati nel
+        # nuovo confine HTTP. Le chiamate Creators API legacy restano separate.
+        _observe_http_delta("search_html_http_requests_per_interaction", before)
 
 
 def price_is_displayable(product: Product) -> bool:
