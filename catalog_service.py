@@ -7,10 +7,10 @@ import time
 from typing import Any, Iterable
 
 import amazon_gateway
-import amazon_html
 import app_constants
 import product_dedup
 import shared_results
+import showcase_parser
 import telemetry
 from product_models import PriceSource, Product, TRUSTED_PRICE_CONFIDENCE
 
@@ -158,9 +158,15 @@ def _observe_batch(prefix: str, products: list[Product]) -> None:
     if not products:
         return
     visible_prices = sum(1 for product in products if price_is_displayable(product))
-    visible_images = sum(1 for product in products if str(product.get("immagine_url") or "").strip())
-    telemetry.observe_value(f"{prefix}_price_visible_ratio", visible_prices / len(products))
-    telemetry.observe_value(f"{prefix}_image_visible_ratio", visible_images / len(products))
+    visible_images = sum(
+        1 for product in products if str(product.get("immagine_url") or "").strip()
+    )
+    telemetry.observe_value(
+        f"{prefix}_price_visible_ratio", visible_prices / len(products)
+    )
+    telemetry.observe_value(
+        f"{prefix}_image_visible_ratio", visible_images / len(products)
+    )
 
 
 def _haul_pool(partner_tag: str) -> list[Product]:
@@ -189,7 +195,12 @@ def get_haul_selection(
         report_failure=True,
     )
     selected = _mark_displayed(
-        _sample_fresh(pool, target, str(refresh_token or time.time_ns()), exclude_asins)
+        _sample_fresh(
+            pool,
+            target,
+            str(refresh_token or time.time_ns()),
+            exclude_asins,
+        )
     )
     _observe_batch("haul", selected)
     return selected
@@ -198,14 +209,14 @@ def get_haul_selection(
 def _showcase_page_index(now: float | None = None) -> int:
     current = float(now if now is not None else time.time())
     bucket = int(current // SHOWCASE_POOL_TTL)
-    return bucket % len(amazon_html.SHOWCASE_PAGES)
+    return bucket % len(showcase_parser.SHOWCASE_PAGES)
 
 
 def _showcase_pool(tag: str) -> list[Product]:
     page_index = _showcase_page_index()
     started = time.perf_counter()
     try:
-        products = amazon_html.fetch_showcase_products_fast(
+        products = showcase_parser.fetch_products(
             page_index=page_index,
             partner_tag=tag,
             item_count=SHOWCASE_FETCH_COUNT,
@@ -217,7 +228,9 @@ def _showcase_pool(tag: str) -> list[Product]:
     telemetry.observe("showcase_fast_fetch_seconds", time.perf_counter() - started)
     telemetry.observe_value("showcase_pool_size", len(products))
     if not products:
-        raise amazon_gateway.BudgetUnavailable("Nessun prodotto recuperabile per la Vetrina")
+        raise amazon_gateway.BudgetUnavailable(
+            "Nessun prodotto recuperabile per la Vetrina"
+        )
     return products
 
 
@@ -230,7 +243,10 @@ def get_showcase_selection(
     if not tag:
         return []
 
-    target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
+    target = max(
+        1,
+        min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE),
+    )
     token = str(refresh_token or time.time_ns())
     pool = shared_results.get(
         (f"showcase-pool-v{app_constants.CACHE_SCHEMA_VERSION}", tag),
@@ -251,7 +267,9 @@ def get_showcase_selection(
 
     started = time.perf_counter()
     enriched = _stamp(amazon_gateway.enrich_product_details(selected_for_detail))
-    telemetry.observe("showcase_detail_enrich_seconds", time.perf_counter() - started)
+    telemetry.observe(
+        "showcase_detail_enrich_seconds", time.perf_counter() - started
+    )
     enriched = _mark_displayed(enriched[:target])
     _observe_batch("showcase", enriched)
     return enriched
@@ -285,9 +303,15 @@ def search_products(
 
 def price_is_displayable(product: Product) -> bool:
     if product.get("_price_displayable") is True:
-        return _positive_float(product.get("prezzo_finale")) is not None and _price_is_fresh(product)
+        return (
+            _positive_float(product.get("prezzo_finale")) is not None
+            and _price_is_fresh(product)
+        )
     confidence = str(product.get("_serp_price_confidence") or "").strip().lower()
-    trusted = product.get("prezzo_verificato") is True or confidence in TRUSTED_PRICE_CONFIDENCE
+    trusted = (
+        product.get("prezzo_verificato") is True
+        or confidence in TRUSTED_PRICE_CONFIDENCE
+    )
     return (
         trusted
         and _positive_float(product.get("prezzo_finale")) is not None
@@ -295,8 +319,16 @@ def price_is_displayable(product: Product) -> bool:
     )
 
 
-def extend_history(history: Iterable[str], products: Iterable[Product], limit: int) -> list[str]:
-    values = [str(value).strip().upper() for value in history if str(value).strip()]
+def extend_history(
+    history: Iterable[str],
+    products: Iterable[Product],
+    limit: int,
+) -> list[str]:
+    values = [
+        str(value).strip().upper()
+        for value in history
+        if str(value).strip()
+    ]
     for product in products:
         value = _asin(product)
         if value:
