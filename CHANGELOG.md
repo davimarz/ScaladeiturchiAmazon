@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-14 — P3 polish finale
+
+- mantenuti 3 prodotti per volta in HAUL, Vetrina e Cerca;
+- mantenuta la palette blu per navigazione, verde per prezzi e arancio Amazon;
+- confermati pesi font standard senza valori intermedi non portabili;
+- eliminate ombre e hover non utili sulle card mobile;
+- spinner di caricamento trasformato in un indicatore compatto nell’area delle card;
+- aggiunti manifest installabile e icona PWA, con static serving Streamlit;
+- il componente Home prova il prompt nativo `beforeinstallprompt` quando disponibile e mantiene istruzioni manuali come fallback;
+- verificato che i boundary HAUL/Vetrina introdotti nei P2 sono effettivamente referenziati, quindi non vengono rimossi come codice morto.
+
 ## 2026-09-14 — P2 audit package
 
 - ricerca: “Carica altri” continua la stessa quota utente;
