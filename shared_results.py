@@ -2,19 +2,17 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
 import threading
 import time
 from collections import OrderedDict
+from typing import Any
 
+import redis_client
 import telemetry
-
-try:
-    import redis
-except ImportError:  # pragma: no cover
-    redis = None
 
 
 class RetryPending(Exception):
@@ -28,28 +26,26 @@ class EmptyResult(Exception):
 
 
 _lock = threading.RLock()
-_entries = OrderedDict()
-_running = set()
+_entries: OrderedDict[Any, dict[str, Any]] = OrderedDict()
+_running: set[Any] = set()
 _changed = threading.Condition(_lock)
 
 
 def _redis_enabled() -> bool:
-    return bool(os.getenv("REDIS_URL", "").strip()) and os.getenv("SCALA_SHARED_CACHE_REDIS", "1") != "0" and redis is not None
-
-
-def _redis_client():
-    if not _redis_enabled():
-        return None
-    return redis.Redis.from_url(
-        os.getenv("REDIS_URL", ""),
-        decode_responses=True,
-        socket_timeout=2,
-        socket_connect_timeout=2,
+    return (
+        redis_client.configured()
+        and os.getenv("SCALA_SHARED_CACHE_REDIS", "1") != "0"
+        and redis_client.get_client() is not None
     )
 
 
+def _redis_client():
+    if not redis_client.configured() or os.getenv("SCALA_SHARED_CACHE_REDIS", "1") == "0":
+        return None
+    return redis_client.get_client(timeout=2.0)
+
+
 def _redis_key(key, suffix: str = "fresh") -> str:
-    import hashlib
     digest = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
     return f"scala:cache:{digest}:{suffix}"
 
@@ -57,6 +53,22 @@ def _redis_key(key, suffix: str = "fresh") -> str:
 def retry_at(key):
     with _lock:
         return _entries.get(key, {}).get("retry_at", 0)
+
+
+def has_fresh(key) -> bool:
+    """Best-effort cache-hit probe used only for telemetry."""
+    now = time.time()
+    with _lock:
+        entry = _entries.get(key)
+        if entry and now < float(entry.get("expires", 0)):
+            return True
+    client = _redis_client()
+    if client is None:
+        return False
+    try:
+        return bool(client.exists(_redis_key(key, "fresh")))
+    except Exception:
+        return False
 
 
 def _redis_read(key, *, allow_stale: bool = False):
@@ -77,9 +89,18 @@ def _redis_read(key, *, allow_stale: bool = False):
         elif now < float(payload.get("expires", 0)):
             telemetry.increment("cache_hit_redis")
             return payload.get("data")
-    except Exception:
+    except Exception as exc:
         telemetry.increment("cache_redis_error")
+        logging.getLogger("amazon_affiliate.cache").warning(
+            "redis_cache_read_failed error_type=%s", type(exc).__name__
+        )
     return None
+
+
+def _json_payload(payload: dict[str, Any]) -> str:
+    # Niente default=str: tipi inattesi devono emergere in test/log invece di
+    # essere convertiti silenziosamente e cambiare tipo al round-trip Redis.
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
 def _redis_write(key, data, ttl: int, stale_for: int):
@@ -91,20 +112,22 @@ def _redis_write(key, data, ttl: int, stale_for: int):
         ttl = max(1, int(ttl))
         stale_for = max(0, int(stale_for))
         fresh_payload = {"expires": now + ttl, "data": data}
-        client.setex(
-            _redis_key(key, "fresh"),
-            ttl,
-            json.dumps(fresh_payload, separators=(",", ":"), default=str),
-        )
+        client.setex(_redis_key(key, "fresh"), ttl, _json_payload(fresh_payload))
         if stale_for > 0:
             stale_payload = {"stale_until": now + ttl + stale_for, "data": data}
             client.setex(
                 _redis_key(key, "stale"),
                 ttl + stale_for,
-                json.dumps(stale_payload, separators=(",", ":"), default=str),
+                _json_payload(stale_payload),
             )
-    except Exception:
+    except TypeError:
+        telemetry.increment("cache_serialization_error")
+        raise
+    except Exception as exc:
         telemetry.increment("cache_redis_error")
+        logging.getLogger("amazon_affiliate.cache").warning(
+            "redis_cache_write_failed error_type=%s", type(exc).__name__
+        )
 
 
 def get(
@@ -166,8 +189,11 @@ def get(
                 _running.discard(key)
                 _changed.notify_all()
             raise
-        logger = logging.getLogger("amazon_affiliate")
-        logger.warning("Cache loader failed error_type=%s retry_seconds=%s", type(exc).__name__, retry)
+        logging.getLogger("amazon_affiliate.cache").warning(
+            "cache_loader_failed error_type=%s retry_seconds=%s",
+            type(exc).__name__,
+            retry,
+        )
         with _changed:
             entry = _entries.setdefault(key, {"data": [], "expires": 0})
             entry["retry_at"] = time.time() + retry
@@ -219,6 +245,7 @@ def _sanitize_stale(data, scrub_stale_prices: bool):
                 prezzo_finale=None,
                 prezzo_iniziale=None,
                 prezzo_verificato=False,
+                price_verified_at=0,
                 sconto="",
                 sconto_val=0,
             )
