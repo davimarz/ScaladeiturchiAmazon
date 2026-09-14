@@ -10,3 +10,6 @@ toolbarMode = "minimal"
 
 [browser]
 gatherUsageStats = false
+
+[server]
+enableStaticServing = true
