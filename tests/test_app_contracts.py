@@ -9,17 +9,20 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_SOURCE = (ROOT / "app.py").read_text(encoding="utf-8")
 
 
-def test_navigation_does_not_refresh_haul_or_showcase():
-    assert 'on_click=_set_tab,\n                args=("haul",)' in APP_SOURCE
-    assert 'on_click=_set_tab,\n                args=("vetrina",)' in APP_SOURCE
-    assert 'key="haul_more",\n            on_click=_refresh_haul' in APP_SOURCE
-    assert 'key="showcase_more",\n            on_click=_refresh_vetrina' in APP_SOURCE
+def test_navigation_contains_only_haul_and_search():
+    assert 'key="nav_haul"' in APP_SOURCE
+    assert 'key="nav_search"' in APP_SOURCE
+    assert 'key="nav_vetrina"' not in APP_SOURCE
+    assert '_refresh_vetrina' not in APP_SOURCE
+    assert 'key="showcase_more"' not in APP_SOURCE
+    assert 'key="haul_more"' in APP_SOURCE
+    assert 'on_click=_refresh_haul' in APP_SOURCE
 
 
 def test_search_prefetches_two_pages_but_displays_three_per_page():
     assert app_constants.SEARCH_PAGE_SIZE == 3
     assert app_constants.SEARCH_PREFETCH_SIZE == 6
-    assert "_load_search(app_constants.SEARCH_PREFETCH_SIZE, append=False)" in APP_SOURCE
+    assert "_load_search(app_constants.SEARCH_PREFETCH_SIZE,append=False)" in APP_SOURCE
 
 
 def test_load_more_is_same_user_search_session():
