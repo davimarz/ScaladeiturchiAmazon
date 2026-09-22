@@ -24,28 +24,23 @@ def test_mobile_navigation_and_search_shell():
 
         expect(page.get_by_role("heading", name="Scala dei Turchi")).to_be_visible()
         haul = page.get_by_role("button", name="HAUL")
-        vetrina = page.get_by_role("button", name="Vetrina")
         cerca = page.get_by_role("button", name="Cerca")
         expect(haul).to_be_visible()
-        expect(vetrina).to_be_visible()
         expect(cerca).to_be_visible()
+        expect(page.get_by_role("button", name="Vetrina")).to_have_count(0)
         expect(page.locator("[aria-current='page']")).to_have_count(1)
 
-        boxes = [haul.bounding_box(), vetrina.bounding_box(), cerca.bounding_box()]
+        boxes = [haul.bounding_box(), cerca.bounding_box()]
         assert all(box is not None for box in boxes)
         boxes = [box for box in boxes if box is not None]
         assert max(box["y"] for box in boxes) - min(box["y"] for box in boxes) <= 2
         assert max(box["height"] for box in boxes) - min(box["height"] for box in boxes) <= 2
         assert max(box["width"] for box in boxes) - min(box["width"] for box in boxes) <= 4
-        assert all(box["width"] < 130 for box in boxes)
         assert min(box["x"] for box in boxes) >= 0
         assert max(box["x"] + box["width"] for box in boxes) <= 390
         assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
 
-        vetrina.click()
-        expect(page.get_by_text("Idee d’acquisto aggiornate", exact=False)).to_be_visible()
-
-        page.get_by_role("button", name="Cerca").click()
+        cerca.click()
         expect(page.get_by_role("heading", name="Cerca su Amazon")).to_be_visible()
         expect(
             page.get_by_placeholder(
@@ -72,7 +67,7 @@ def test_keyboard_focus_reaches_primary_navigation():
             )
             if label:
                 found.add(label)
-        assert {"HAUL", "Vetrina", "Cerca"}.intersection(found)
+        assert {"HAUL", "Cerca"}.intersection(found)
         browser.close()
 
 
@@ -84,8 +79,9 @@ def test_zoom_200_and_400_keeps_navigation_available():
         page.goto(BASE_URL, wait_until="networkidle")
         for zoom in (2, 4):
             page.evaluate("z => document.documentElement.style.zoom = String(z)", zoom)
+            expect(page.get_by_role("button", name="HAUL")).to_be_visible()
             expect(page.get_by_role("button", name="Cerca")).to_be_visible()
-            expect(page.get_by_role("button", name="Vetrina")).to_be_visible()
+            expect(page.get_by_role("button", name="Vetrina")).to_have_count(0)
         browser.close()
 
 
