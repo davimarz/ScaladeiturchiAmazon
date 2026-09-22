@@ -1,7 +1,7 @@
 # Runtime dependency lock for Python 3.12, generated from requirements.txt.
 # CI resolves requirements.txt in an isolated venv and compares package/version
 # pairs semantically (case/order independent) with this file.
-altair==6.2.2
+altair==6.3.0
 anyio==4.15.1
 attrs==26.1.0
 beautifulsoup4==4.15.0
@@ -12,7 +12,7 @@ click==8.5.0
 curl_cffi==0.16.3
 h11==0.16.0
 httptools==0.8.0
-idna==3.19
+idna==3.20
 itsdangerous==2.2.0
 Jinja2==3.1.6
 jsonschema==4.26.0
@@ -21,9 +21,9 @@ MarkupSafe==3.0.3
 narwhals==2.26.0
 numpy==2.5.3
 packaging==26.3
-pandas==3.0.5
+pandas==3.0.6
 pillow==12.3.0
-protobuf==7.36.1
+protobuf==7.36.2
 pyarrow==25.0.1
 pycparser==3.0
 pydeck==0.9.3
@@ -39,7 +39,7 @@ starlette==1.6.0
 streamlit==1.63.0
 toml==0.10.2
 typing_extensions==4.16.0
-urllib3==2.7.0
+urllib3==2.8.0
 uvicorn==0.53.0
 watchdog==6.0.0
 websockets==16.1.1
