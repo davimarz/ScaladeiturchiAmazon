@@ -69,9 +69,9 @@ def test_css_keeps_mobile_touch_targets_reduced_motion_and_sticky_nav():
     assert "@media(max-width:430px)" in ui_components.CSS
 
 
-def test_main_navigation_uses_three_real_equal_width_columns_on_mobile():
+def test_main_navigation_uses_two_real_equal_width_columns_on_mobile():
     assert "display:grid!important" in ui_components.CSS
-    assert "grid-template-columns:repeat(3,minmax(0,1fr))!important" in ui_components.CSS
+    assert "grid-template-columns:repeat(2,minmax(0,1fr))!important" in ui_components.CSS
     assert 'div[data-testid="stColumn"]' in ui_components.CSS
     assert "width:100%!important;max-width:100%!important;min-width:0!important" in ui_components.CSS
     assert "min-height:36px!important;height:36px!important" in ui_components.CSS
