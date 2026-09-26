@@ -14,12 +14,14 @@ import showcase_parser
 import telemetry
 from product_models import PriceSource, Product, TRUSTED_PRICE_CONFIDENCE
 
-HAUL_POOL_TTL = 300
-SHOWCASE_POOL_TTL = 30 * 60
+# Pool piu ampi e rotazione piu rapida: l'obiettivo e mostrare prodotti diversi
+# senza aumentare inutilmente le chiamate Amazon a ogni rerun di Streamlit.
+HAUL_POOL_TTL = 180
+SHOWCASE_POOL_TTL = 10 * 60
 SHOWCASE_STALE_FOR = 24 * 60 * 60
-SHOWCASE_FETCH_COUNT = 12
-HAUL_HISTORY_LIMIT = 50
-SHOWCASE_HISTORY_LIMIT = 24
+SHOWCASE_FETCH_COUNT = 30
+HAUL_HISTORY_LIMIT = 120
+SHOWCASE_HISTORY_LIMIT = 120
 DISPLAY_BATCH_SIZE = app_constants.DISPLAY_BATCH_SIZE
 
 
@@ -141,6 +143,7 @@ def _sample_fresh(
     *,
     prefer_priced: bool = False,
 ) -> list[Product]:
+    """Seleziona prima prodotti mai mostrati; ricicla i vecchi solo a pool esaurito."""
     target = max(1, int(count))
     excluded = {str(value).strip().upper() for value in exclude_asins if str(value).strip()}
     unique_pool = product_dedup.unique(list(pool or []))
@@ -153,6 +156,8 @@ def _sample_fresh(
     else:
         rng.shuffle(fresh)
         rng.shuffle(previous)
+
+    # Non ripetere prodotti se esistono abbastanza alternative nuove.
     selected = fresh[:target]
     if len(selected) < target:
         selected.extend(previous[: target - len(selected)])
@@ -162,7 +167,7 @@ def _sample_fresh(
 
 
 def _enrich_missing_prices(products: list[Product]) -> list[Product]:
-    """Verifica solo le card visibili prive di un prezzo già affidabile."""
+    """Verifica solo le card visibili prive di un prezzo gia affidabile."""
     result = [dict(product) for product in products]
     indexes = [index for index, product in enumerate(result) if not price_is_displayable(product)]
     if not indexes:
@@ -221,14 +226,16 @@ def get_haul_selection(
     return selected
 
 
-def _showcase_page_index(now: float | None = None) -> int:
+def _showcase_page_index(now: float | None = None, token: str | None = None) -> int:
+    """Ruota le pagine Vetrina anche tra refresh manuali, non solo col tempo."""
     current = float(now if now is not None else time.time())
     bucket = int(current // SHOWCASE_POOL_TTL)
+    if token:
+        bucket += _seed(token)
     return bucket % len(showcase_parser.SHOWCASE_PAGES)
 
 
-def _showcase_pool(tag: str) -> list[Product]:
-    page_index = _showcase_page_index()
+def _showcase_pool(tag: str, page_index: int) -> list[Product]:
     started = time.perf_counter()
     try:
         products = showcase_parser.fetch_products(page_index=page_index, partner_tag=tag, item_count=SHOWCASE_FETCH_COUNT)
@@ -253,10 +260,11 @@ def get_showcase_selection(
         return []
     target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), DISPLAY_BATCH_SIZE))
     token = str(refresh_token or time.time_ns())
+    page_index = _showcase_page_index(token=token)
     pool = shared_results.get(
-        (f"showcase-pool-v{app_constants.CACHE_SCHEMA_VERSION}", tag),
+        (f"showcase-pool-v{app_constants.CACHE_SCHEMA_VERSION}", tag, page_index),
         SHOWCASE_POOL_TTL,
-        lambda: _showcase_pool(tag),
+        lambda: _showcase_pool(tag, page_index),
         retry=60,
         stale_for=SHOWCASE_STALE_FOR,
         report_failure=True,
