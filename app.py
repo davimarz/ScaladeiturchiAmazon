@@ -12,6 +12,7 @@ import streamlit.components.v1 as components
 import amazon_gateway
 import app_constants
 import catalog_service
+import lambo_parser
 import services
 import telemetry
 import ui_components
@@ -21,9 +22,9 @@ st.set_page_config(page_title="Scala dei Turchi | Offerte Amazon", page_icon="�
 LOGGER = logging.getLogger("amazon_affiliate_app")
 logging.getLogger("amazon_affiliate").setLevel(logging.WARNING)
 MAX_RESULTS = amazon_gateway.MAX_RESULTS
-DEFAULTS = {"current_tab":"haul","offerte_haul":[],"haul_refresh_token":str(time.time_ns()),"haul_loaded_token":None,"haul_seen_asins":[],"offerte":[],"has_searched":False,"current_page":1,"search_keyword_input":"","search_sort":app_constants.SORT_PRICE,"search_prime_only":False,"last_search":{"keyword":"","sort":app_constants.SORT_PRICE,"prime_only":False},"search_notice":"","next_search_at":0.0,"visitor_id":None,"reset_identity_requested":False,"identity_reset_notice":False}
+DEFAULTS = {"current_tab":"haul","offerte_haul":[],"haul_refresh_token":str(time.time_ns()),"haul_loaded_token":None,"haul_seen_asins":[],"lambo_url":lambo_parser.DEFAULT_LAMBO_URL,"offerte_lambo":[],"lambo_refresh_token":"","lambo_loaded_token":"","lambo_seen_asins":[],"lambo_notice":"","offerte":[],"has_searched":False,"current_page":1,"search_keyword_input":"","search_sort":app_constants.SORT_PRICE,"search_prime_only":False,"last_search":{"keyword":"","sort":app_constants.SORT_PRICE,"prime_only":False},"search_notice":"","next_search_at":0.0,"visitor_id":None,"reset_identity_requested":False,"identity_reset_notice":False}
 for key,value in DEFAULTS.items(): st.session_state.setdefault(key,value)
-if st.session_state.get("current_tab") not in {"haul","cerca","privacy"}: st.session_state["current_tab"]="haul"
+if st.session_state.get("current_tab") not in {"haul","lambo","cerca","privacy"}: st.session_state["current_tab"]="haul"
 try:
     if str(st.query_params.get("privacy",""))=="1": st.session_state["current_tab"]="privacy"
 except Exception: pass
@@ -35,6 +36,8 @@ def _clear_query_params():
 
 def _set_tab(name): st.session_state["current_tab"]=name; _clear_query_params()
 def _refresh_haul(): st.session_state["current_tab"]="haul"; st.session_state["haul_refresh_token"]=str(time.time_ns()); st.session_state["haul_loaded_token"]=None; _clear_query_params()
+def _scan_lambo(): st.session_state["current_tab"]="lambo"; st.session_state["offerte_lambo"]=[]; st.session_state["lambo_seen_asins"]=[]; st.session_state["lambo_notice"]=""; st.session_state["lambo_refresh_token"]=str(time.time_ns()); st.session_state["lambo_loaded_token"]=""; _clear_query_params()
+def _refresh_lambo(): st.session_state["current_tab"]="lambo"; st.session_state["lambo_notice"]=""; st.session_state["lambo_refresh_token"]=str(time.time_ns()); st.session_state["lambo_loaded_token"]=""; _clear_query_params()
 def _clear_search(): st.session_state["search_keyword_input"]=""; st.session_state["offerte"]=[]; st.session_state["has_searched"]=False; st.session_state["search_notice"]=""; st.session_state["current_page"]=1
 def _request_identity_reset(): st.session_state["reset_identity_requested"]=True; st.session_state["identity_reset_notice"]=False
 
@@ -120,9 +123,10 @@ def _load_search(target,append=False):
 def _render_navigation():
     active=st.session_state["current_tab"]
     with st.container(key="main_nav"):
-        ui_components.render_nav_accessibility(active); nav1,nav2=st.columns(2,gap="small")
+        ui_components.render_nav_accessibility(active); nav1,nav2,nav3=st.columns(3,gap="small")
         with nav1:st.button("HAUL",key="nav_haul",type="primary" if active=="haul" else "secondary",on_click=_set_tab,args=("haul",),use_container_width=True)
-        with nav2:st.button("Cerca",key="nav_search",type="primary" if active=="cerca" else "secondary",on_click=_set_tab,args=("cerca",),use_container_width=True)
+        with nav2:st.button("Offerte Lambo",key="nav_lambo",type="primary" if active=="lambo" else "secondary",on_click=_set_tab,args=("lambo",),use_container_width=True)
+        with nav3:st.button("Cerca",key="nav_search",type="primary" if active=="cerca" else "secondary",on_click=_set_tab,args=("cerca",),use_container_width=True)
 
 ui_components.render_brand(); _render_navigation(); partner_tag=amazon_gateway.get_partner_tag()
 if not partner_tag:st.error("Configurazione Amazon incompleta: le offerte sono temporaneamente non disponibili.")
@@ -144,6 +148,40 @@ if active_tab=="haul":
         for index,product in enumerate(products):ui_components.render_product_card(product,eager_image=index==0)
         st.button(f"Mostrami altri {app_constants.DISPLAY_BATCH_SIZE}",key="haul_more",on_click=_refresh_haul,use_container_width=True); ui_components.render_back_to_top()
     else:st.info("Nessun prodotto HAUL disponibile adesso."); st.link_button("Apri Amazon HAUL",amazon_gateway.build_haul_link(),use_container_width=True)
+
+elif active_tab=="lambo":
+    st.subheader("Offerte Lambo")
+    st.caption("Incolla o modifica il link Amazon.it da scansionare. Il link delle Offerte Lampo è già impostato come predefinito.")
+    st.text_input("Link Amazon Offerte Lambo",key="lambo_url",placeholder=lambo_parser.DEFAULT_LAMBO_URL)
+    scan_col,refresh_col=st.columns(2,gap="small")
+    with scan_col:st.button("Scansiona",key="lambo_scan",type="primary",on_click=_scan_lambo,use_container_width=True)
+    with refresh_col:st.button("Aggiorna offerte Lambo",key="lambo_refresh",on_click=_refresh_lambo,use_container_width=True)
+    current_token=str(st.session_state.get("lambo_refresh_token") or "")
+    if partner_tag and current_token and st.session_state.get("lambo_loaded_token")!=current_token:
+        try:
+            source_url=lambo_parser.normalize_url(str(st.session_state.get("lambo_url") or lambo_parser.DEFAULT_LAMBO_URL))
+            with st.spinner("Sto scansionando le Offerte Lambo…"),telemetry.timed("lambo_load_seconds"):products=services.lambo_service.get(source_url,app_constants.DISPLAY_BATCH_SIZE,current_token,st.session_state.get("lambo_seen_asins",[]))
+            if products:
+                st.session_state["offerte_lambo"]=list(products)
+                st.session_state["lambo_seen_asins"]=catalog_service.extend_history(st.session_state.get("lambo_seen_asins",[]),products,catalog_service.LAMBO_HISTORY_LIMIT)
+                st.session_state["lambo_notice"]=f"Scansione completata: {len(products)} prodotti caricati."
+            else:st.session_state["lambo_notice"]="Nessun prodotto trovato nel link indicato."
+            st.session_state["lambo_loaded_token"]=current_token; telemetry.increment("lambo_refresh_success")
+        except ValueError as exc:
+            st.session_state["lambo_notice"]=str(exc); st.session_state["lambo_loaded_token"]=current_token; telemetry.increment("lambo_invalid_url")
+        except amazon_gateway.RetryPending:
+            st.session_state["lambo_notice"]="Amazon è temporaneamente occupato. Riprova tra poco."
+        except Exception as exc:
+            LOGGER.warning("lambo_load_failed error_type=%s",type(exc).__name__); telemetry.increment("lambo_refresh_error"); st.session_state["lambo_notice"]="Aggiornamento Offerte Lambo non riuscito; restano visibili le proposte precedenti."
+    notice=str(st.session_state.get("lambo_notice") or "")
+    if notice:st.info(notice)
+    products=list(st.session_state.get("offerte_lambo",[]))
+    if products:
+        ui_components.render_section_label(f"Offerte Lambo · {len(products)} prodotti"); ui_components.render_price_notice()
+        for index,product in enumerate(products):ui_components.render_product_card(product,eager_image=index==0)
+        ui_components.render_back_to_top()
+    elif not current_token:
+        st.info("Premi “Scansiona” per importare le offerte dal link predefinito o da un altro link Amazon.it.")
 
 elif active_tab=="cerca":
     _initialize_browser_identity(); st.subheader("Cerca su Amazon"); status=_quota(False)
