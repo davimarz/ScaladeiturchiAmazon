@@ -12,6 +12,11 @@ class HaulService:
         return catalog_service.get_haul_selection(count, token, seen)
 
 
+class LamboService:
+    def get(self, source_url: str, count: int, token: str, seen: Iterable[str]) -> list[Product]:
+        return catalog_service.get_lambo_selection(source_url, count, token, seen)
+
+
 class SearchService:
     def search(
         self,
@@ -31,4 +36,5 @@ class SearchService:
 
 
 haul_service = HaulService()
+lambo_service = LamboService()
 search_service = SearchService()
