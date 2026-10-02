@@ -11,14 +11,17 @@ import app_constants
 import product_dedup
 import shared_results
 import showcase_parser
+import lambo_parser
 import telemetry
 from product_models import PriceSource, Product, TRUSTED_PRICE_CONFIDENCE
 
 HAUL_POOL_TTL = 300
+LAMBO_POOL_TTL = 300
 SHOWCASE_POOL_TTL = 30 * 60
 SHOWCASE_STALE_FOR = 24 * 60 * 60
 SHOWCASE_FETCH_COUNT = 12
 HAUL_HISTORY_LIMIT = 50
+LAMBO_HISTORY_LIMIT = 50
 SHOWCASE_HISTORY_LIMIT = 24
 DISPLAY_BATCH_SIZE = app_constants.DISPLAY_BATCH_SIZE
 
@@ -218,6 +221,45 @@ def get_haul_selection(
     )
     selected = _mark_displayed(_enrich_missing_prices(selected))
     _observe_batch("haul", selected)
+    return selected
+
+
+def _lambo_pool(source_url: str, partner_tag: str) -> list[Product]:
+    products = _stamp(lambo_parser.fetch_products(source_url, partner_tag))
+    if not products:
+        raise amazon_gateway.BudgetUnavailable("Nessun prodotto Offerte Lambo leggibile")
+    telemetry.observe_value("lambo_pool_size", len(products))
+    return products
+
+
+def get_lambo_selection(
+    source_url: str,
+    item_count: int = DISPLAY_BATCH_SIZE,
+    refresh_token: str | None = None,
+    exclude_asins: Iterable[str] = (),
+) -> list[Product]:
+    tag = amazon_gateway.get_partner_tag()
+    if not tag:
+        return []
+    normalized_url = lambo_parser.normalize_url(source_url)
+    target = max(1, min(int(item_count or DISPLAY_BATCH_SIZE), 10))
+    pool = shared_results.get(
+        (f"lambo-pool-v{app_constants.CACHE_SCHEMA_VERSION}", tag, normalized_url),
+        LAMBO_POOL_TTL,
+        lambda: _lambo_pool(normalized_url, tag),
+        retry=30,
+        stale_for=900,
+        report_failure=True,
+    )
+    selected = _sample_fresh(
+        pool,
+        target,
+        str(refresh_token or time.time_ns()),
+        exclude_asins,
+        prefer_priced=True,
+    )
+    selected = _mark_displayed(_enrich_missing_prices(selected))
+    _observe_batch("lambo", selected)
     return selected
 
 
